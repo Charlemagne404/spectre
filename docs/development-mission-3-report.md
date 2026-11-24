@@ -75,3 +75,8 @@
 3. Add portable investigation backup/import if required; current reports are summaries and IndexedDB profile data is not a restorable case database.
 4. Extend parsers with additional malformed/truncated fixtures and richer PDF xref-stream/object-stream handling before making broader completeness claims.
 5. Re-run browser performance at 500 MiB and 1 GiB for compare/search only if a future implementation changes their slice strategy; current helper benchmark covers 128 MiB.
+
+## Git checkpoints
+
+- Preserved starting point: `0041b9be3c4ba21a2fd54b7e3d6e3567c4d64acd` on `codex/spectre-overnight`.
+- Mission III implementation: `7ee6fd3` (`feat(blackbox): build investigation workbench`).

@@ -11,6 +11,7 @@
 - Captured actual launcher, empty, progress, completed, inspector, structural, investigation, bookmark, and comparison screens at 1920×1080, 1440×900, 1280×800, 1024×768, and 740×580. Recorded four real workflows. Evidence is local under `output/development-mission-3/` and ignored by Git.
 - Disk-backed 128 MiB helper benchmark: offset-aligned comparison **2.54 s** (one changed byte correctly identified); full-file no-match search **0.96 s**. This is a Node/Vitest helper measurement, not a Chromium or native application benchmark.
 - `npm run build` passed; `npm test -- --reporter=dot` passed 47 tests; `npm run test:e2e -- --workers=1` passed 44 tests across Chromium and WebKit with 14 opt-in profiling cases skipped; `git diff --check` passed. A WebKit-only history race found in the first full run was fixed by recording action-driven navigation synchronously; the subsequent full run passed.
+- Verified implementation checkpoint committed as `7ee6fd3` (`feat(blackbox): build investigation workbench`) on `codex/spectre-overnight`; no push or deployment performed.
 - Native Linux build remains blocked: `glib-2.0.pc`, `gtk+-3.0.pc`, and `webkit2gtk-4.1.pc` are unavailable; unattended sudo is unavailable. No privileged install was attempted. The supported prerequisite command is recorded in the mission report.
 
 ### Remaining work and limits
