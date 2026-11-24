@@ -18,7 +18,7 @@ No push, merge, or deployment is part of this work.
 - **Problem:** Rust and Cargo were absent, so a project-native build could not be attempted.
 - **Approach:** Installed the official stable toolchain with rustup for the current user, using the minimal profile.
 - **Result:** `rustup 1.29.3`, `rustc 1.100.0`, and `cargo 1.100.0` are installed under `/home/charlie/.cargo`. The Codex shell does not add `.cargo/bin` to its default `PATH`; the absolute binaries work, and `/home/charlie/.cargo/env` supplies the intended user-local path setup.
-- **Native build:** `npm run tauri build -- --bundles deb` rebuilt the frontend and compiled Rust dependencies until `glib-sys` could not find `glib-2.0.pc`. Required Ubuntu development packages include `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libglib2.0-dev`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, and `librsvg2-dev` per the [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/). `pkg-config` confirms GLib development metadata is missing. `sudo -n true` reports that a password is required, so the current account cannot install these packages. Runtime GTK, WebKitGTK and AppIndicator libraries are present. The host has an X11 session; there is no built native binary to execute.
+- **Native build:** `npm run tauri build -- --bundles deb` rebuilt the frontend and compiled Rust dependencies until `glib-sys` could not find `glib-2.0.pc`. Tauri's [official Ubuntu prerequisites](https://v2.tauri.app/start/prerequisites/) list `libwebkit2gtk-4.1-dev`, `build-essential`, `curl`, `wget`, `file`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, and `librsvg2-dev`; the WebKit/GTK development packages provide the missing GLib metadata. `pkg-config` confirms that metadata is missing. `sudo -n true` reports that a password is required, so the current account cannot install the packages. Runtime GTK, WebKitGTK and AppIndicator libraries are present. The host has an X11 session; there is no built native binary to execute.
 - **Verified boundary:** Frontend build is verified. The Rust toolchain is installed, but the Spectre Rust crate did not finish compiling. No Tauri bundle was produced, and desktop execution is unverified.
 
 ## Iteration 1 — reduce the large-file statistics hot loop
@@ -44,7 +44,7 @@ No push, merge, or deployment is part of this work.
 - **Approach:** Keep the feature in the hex footer so it follows the current shared byte selection and does not introduce a new pane.
 - **Implementation:** Added U8, U16, U32, and U64 views with an explicit little-/big-endian toggle. The value reader fetches at most eight bytes from the selected offset, displays the exact unsigned hexadecimal value, and provides its decimal value in the control title. Incomplete values are reported instead of being padded or read past EOF.
 - **Verification:** Unit tests cover known RIFF bytes, both byte orders, 64-bit values, and truncated input. Chromium and WebKit interaction tests verify the default U32 little-endian view, byte-order switch, U64 view, and U8 behavior.
-- **Remaining issue:** Inspect the footer at every supported viewport and adjust if the added controls crowd the hex pane.
+- **Result:** The final footer fit all five requested viewports without document overflow; screenshots and browser interactions are recorded below.
 
 ## Iteration 4 — tighten parser bounds and HTML report safety
 
@@ -63,7 +63,7 @@ No push, merge, or deployment is part of this work.
 ## Final validation and remaining backlog
 
 1. **Blocked by host permissions — native Linux packaging:** Stable Rust is installed, but Tauri's Linux development metadata is missing. `glib-sys` cannot find `glib-2.0.pc`; this user cannot use `sudo` without a password. Frontend compilation and bundle verification are separate and are recorded below. No native app execution is claimed.
-2. **Follow-up — near-EOF interaction latency:** The measured underlying read is 1 KiB, but end-to-end navigation was 241 ms in one 1 GiB run and 306 ms in its repeat. Repeat this interaction under lower host load if a tighter-than-1-second experience target is needed; both observed values meet the current target.
+2. **Target met — near-EOF interaction latency:** The final run measured 170 ms after earlier optimized runs of 241 ms and 306 ms. Repeat under lower host load only if a stricter target than the current 1-second limit is adopted.
 3. **Follow-up — parser breadth:** The supported parsers intentionally remain bounded and partial. Mach-O support and deeper conformance work are candidates only if they materially serve the target workflow; no new shallow parsers were added.
 
 ### Final command results

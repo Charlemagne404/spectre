@@ -1,44 +1,76 @@
-# SPECTRE release-candidate completion report
+# SPECTRE autonomous continuation report
 
-Date: 2026-11-24  
-Branch: `codex/spectre-overnight` at `026ed10`  
-Scope: local release-candidate refinement and verification; no push or deployment
+Date: 2026-11-24
+Branch: `codex/spectre-overnight`
+Status: substantial browser-side implementation verified; native Tauri release validation is blocked by missing system development packages.
 
-## What changed
+## Checkpoint and implementation
 
-- Replaced the fabricated boot sequence with short, skippable messages tied to actual renderer, file-input, worker, first-frame, font, and ready states. Elapsed times use the running app clock. Reduced-motion preference still skips the sequence.
-- Refined BLACKBOX activation into a brief amber pane-edge trace. The panes and file controls remain visible and usable during the trace.
-- Corrected the live progress label so it says `HASHING + BYTE STATISTICS` until the digest is ready, then reports statistics work accurately.
-- Added measured elapsed time for file-range reads, SHA-256, statistics/string scanning, and structure parsing. The phase timings are included in JSON and HTML reports.
-- Added browser coverage for actual boot messaging, file intake during activation, reduced-motion behavior, and 1024×768 / 740×580 layout. At the minimum viewport, the workspace stacks vertically and remains reachable by normal scrolling without horizontal overflow.
+- Confirmed the requested branch and preserved all prior-session work. The prior-session changes were checkpointed as `f21c694` (`Refine startup readiness and document release candidate`) after verifying 27 unit tests, the production build, and the then-current browser suite.
+- Implemented this continuation in `fa6c8ca` (`Optimize large-file analysis and enrich hex inspection`). No changes were pushed, merged, or deployed.
+- Added an unsigned integer readout to the shared hex footer. It interprets U8/U16/U32/U64 in selectable little- or big-endian order, reads at most eight bytes, preserves U64 precision, and does not fabricate values for truncated input.
+- Optimized the byte statistics/string hot path with bounded typed counters, less repeated offset and first-occurrence work, end-of-file entropy completion outside the per-byte loop, and an inert-NUL scanner fast path.
+- Corrected WAVE completeness reporting for invalid RIFF bounds, missing chunks, and short `fmt ` headers. SQLite traversal now deduplicates queued page references, avoids repeated front-removal copies, and caps distinct pages. Added regression coverage for both.
+- Added hostile imported filename/string coverage for HTML report escaping. No new runtime dependency was added. The native permission boundary remains unchanged.
 
-The existing local-first design remains intact: streamed worker analysis, incremental SHA-256, bounded string indexing and full-file search, entropy and byte statistics, format parsers, random-access hex pages, byte search, cross-pane byte-range selection, cancellation, and JSON/HTML reports. No dependency or data-store was added. The app remains silent, does not execute imported content, and does not extract archives. Architecture and product-scope decisions are in [overnight-research.md](overnight-research.md).
+## Performance evidence
 
-## Verification
+Measurements are headless Chromium browser runs on this Ubuntu host. The source files were deterministic disk-backed fixtures, and SHA-256 was independently calculated and compared. This is not native Tauri performance evidence and is not a controlled comparison with the historical Apple M2 results.
+
+| File size | Fresh baseline total | Final total | Mean of three optimized runs where repeated | Final worker time | Statistics + strings | Sampled RSS growth |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 MiB | 0.914 s | 0.819 s | — | 0.286 s | 0.199 s | 139.3 MiB |
+| 128 MiB | 4.301 s | 2.709 s | — | 2.342 s | 1.211 s | 279.7 MiB |
+| 500 MiB | 14.076 s | 7.527 s | 7.499 s | 7.100 s | 3.292 s | 284.5 MiB |
+| 1 GiB | 51.566 s | 19.925 s | 19.759 s | 19.690 s | 11.662 s | 233.3 MiB |
+
+The final 500 MiB run was 46.5% faster than the fresh baseline; its three-run mean was 46.7% faster. The final 1 GiB run was 61.4% faster; its three-run mean was 61.7% faster. All runs passed independent digest checks. The 1 GiB navigation measurement was 170 ms; maximum animation-frame gap was 116.7 ms. Cancellation during a 128 MiB analysis took 11.5 ms. The four-size benchmark suite passed 5/5 tests. Full phase data, repeated runs, CPU/RSS collection notes, and reproduction commands are in [large-file-performance.md](large-file-performance.md).
+
+These numbers meet the 500 MiB (<20 s) and 1 GiB (<45 s) targets with substantial margin on this host. RSS is sampled Playwright process-tree growth, not app-private or exact peak allocation. The host had elevated memory/swap usage during the broader session; the final timed performance command itself recorded no swap-in/out. CPU percentage is command-level and includes fixture generation.
+
+## Native environment and verification boundary
+
+Rustup stable was installed in the current user's environment: rustup 1.29.3, rustc 1.100.0, and cargo 1.100.0. The binaries are under `/home/charlie/.cargo/bin`; the Codex shell does not add that directory to its default `PATH`, but the absolute binaries work and `/home/charlie/.cargo/env` initializes the user-local path.
+
+| Required evidence | Result |
+| --- | --- |
+| Frontend TypeScript/Vite build | **Verified** by `npm run build` |
+| Rust compilation of Spectre | **Not verified**; dependency compilation stops in `glib-sys` before the Spectre crate because `glib-2.0.pc` is missing |
+| Native Tauri bundle | **Not produced** |
+| Actual desktop application execution | **Not verified**; the host has an X11 session but no native binary to launch |
+
+The official Tauri Ubuntu prerequisites list `libwebkit2gtk-4.1-dev`, `build-essential`, `curl`, `wget`, `file`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, and `librsvg2-dev` ([Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/)); the WebKit/GTK development packages supply required GTK/GLib development metadata. `pkg-config` confirms `glib-2.0.pc` is missing. `sudo -n true` reports that a password is required, so the current account cannot install the packages. No unrelated system configuration or service was changed. The Tauri build attempt rebuilt the frontend before stopping at the missing Linux development dependency.
+
+The toolchain installation makes a native build possible once those packages are provided, but it does not establish Rust compilation, bundle creation, native graphical execution, or native performance. A Rust analysis rewrite was not started: the current worker meets the measured targets, and there is no native benchmark to justify duplicating the engine.
+
+## Tests and visual evidence
 
 | Check | Result |
 | --- | --- |
-| `npm test` | 27/27 unit tests passed |
-| `npm run build` | TypeScript and Vite production build passed |
-| `npm run test:e2e` | 32 enabled cases passed across Chromium and WebKit; 14 opt-in performance cases skipped by default |
-| Opt-in Chromium performance suite | All six file fixtures and the cancellation case exercised across two runs; all test assertions passed |
-| `git diff --check` | Passed |
-| Native Tauri build | Not available on this host: Rust and Cargo are not installed |
+| `npm test` | 32/32 unit tests passed |
+| `npm run build` | TypeScript and production Vite build passed |
+| `npm run test:e2e -- --workers=1` | 34 passed across Chromium and WebKit; 14 opt-in performance cases skipped by default |
+| Final four-size performance run | 5/5 passed, including digest, responsiveness, navigation and cancellation measurements |
+| `git diff --check` | Passed after all source and documentation changes |
 
-The latest large-file table and reproduction steps are in [large-file-performance.md](large-file-performance.md). On this Ubuntu host, the 500 MiB fixture completed in 14.277 s total / 13.565 s worker time. The 1 GiB fixture completed with the correct digest in 50.437 s total / 49.968 s worker time, about 5.4 seconds over the 45-second target. Its statistics-and-strings phase was 41.623 s, the largest observed optimization opportunity. The 1 GiB scan remained responsive (116.7 ms maximum frame gap), grew the sampled Playwright process-tree RSS by 245.4 MiB, and jumped near EOF in 193 ms. The 500 MiB run used 312.6 MiB sampled RSS growth and had a 133.5 ms maximum frame gap. Both met the memory, frame-gap, and random-access targets.
+The final browser screenshots are local, gitignored captures under `output/overnight-visual-evidence-final/`. The launcher, empty workspace, active analysis, and completed inspection were visually reviewed. Completed workspaces were captured at 1920×1080, 1440×900, 1280×800, 1024×768, and 740×580; the minimum layout had no horizontal overflow. These captures are browser evidence, not physical-display, desktop-WebView, or assistive-technology certification.
 
-These are single-run browser measurements on an Intel i5-9400F system with memory and swap pressure; they are not statistical guarantees and are not directly comparable with the historical Apple M2 runs in the performance document. RSS is sampled process-tree memory, not app-private memory. The native desktop build and physical WebView performance are unverified on this host.
+- [Launcher](../output/overnight-visual-evidence-final/launcher-1440x900-final.png)
+- [Empty workspace](../output/overnight-visual-evidence-final/blackbox-empty-1440x900-final.png)
+- [Active 128 MiB analysis](../output/overnight-visual-evidence-final/blackbox-analysis-128MiB-1440x900-final.png)
+- [Completed workspace, 1440×900](../output/overnight-visual-evidence-final/blackbox-completed-1440x900-final.png)
+- [Completed workspace, 740×580](../output/overnight-visual-evidence-final/blackbox-completed-740x580-final.png)
+- [All completed viewport screenshots](../output/overnight-visual-evidence-final/)
 
-## Visual evidence
+## Remaining limitations
 
-Production-preview screenshots were saved under the gitignored `output/overnight-visual-evidence/` directory:
+- A native Linux build, bundle, application launch, and native large-file benchmark require the Tauri development libraries listed above and remain unverified on this account.
+- Format intelligence is deliberately bounded rather than a full conformance suite. PDF xref/object streams and stream payloads remain unresolved; parser record/page/metadata caps are listed in the README. Mach-O support was not added.
+- Browser RSS is coarse process-tree sampling. The final near-EOF interaction was 170 ms, while earlier optimized runs ranged from 241 to 306 ms; all are below the 1-second target, but host/browser scheduling adds variability.
+- No physical desktop or formal assistive-technology review was performed.
 
-- [Launcher](../output/overnight-visual-evidence/launcher-1440x900.png)
-- [Boot readiness](../output/overnight-visual-evidence/boot-readiness-1440x900.png)
-- [Empty workspace](../output/overnight-visual-evidence/blackbox-empty-1440x900.png)
-- [Activation trace](../output/overnight-visual-evidence/blackbox-activation-1440x900.png)
-- [128 MiB analysis in progress](../output/overnight-visual-evidence/blackbox-analysis-128MiB-1440x900.png)
-- [Completed sample analysis](../output/overnight-visual-evidence/blackbox-completed-1440x900.png)
-- [Minimum viewport](../output/overnight-visual-evidence/blackbox-minimum-740x580.png)
+## Release assessment
 
-The worktree is left modified and uncommitted on `codex/spectre-overnight`. No remote branch was updated and no deployment was performed.
+Spectre is **not declared finished or release-ready**. The frontend, browser workflows, correctness checks, and measured TypeScript large-file targets pass. Native Tauri verification remains a release blocker until the Linux development packages can be installed and the bundle can be built and launched.
+
+Development history and remaining prioritized follow-ups are in [overnight-development-log.md](overnight-development-log.md); architecture decisions are in [overnight-research.md](overnight-research.md).
