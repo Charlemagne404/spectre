@@ -1,5 +1,10 @@
-interface TauriCore {
+export interface TauriChannel<T> {
+  onmessage: ((message: T) => void) | null;
+}
+
+export interface TauriCore {
   invoke<T>(command: string, arguments_?: Record<string, unknown>): Promise<T>;
+  Channel?: new <T>() => TauriChannel<T>;
 }
 
 declare global {

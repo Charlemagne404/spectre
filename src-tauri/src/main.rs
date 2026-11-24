@@ -5,7 +5,12 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
+mod recon;
+
 fn write_report(directory: &Path, file_name: &str, contents: &str) -> Result<PathBuf, String> {
+    if contents.len() > 12 * 1024 * 1024 {
+        return Err("Report exceeds the 12 MiB export limit.".into());
+    }
     let path = Path::new(file_name);
     if file_name.len() > 160
         || !file_name.starts_with("spectre-")
@@ -63,7 +68,12 @@ fn save_report(app: AppHandle, file_name: String, contents: String) -> Result<St
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![save_report])
+        .manage(recon::commands::ReconState::default())
+        .invoke_handler(tauri::generate_handler![
+            save_report,
+            recon::commands::start_recon,
+            recon::commands::cancel_recon
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Spectre");
 }
@@ -105,6 +115,16 @@ mod tests {
         let directory = test_directory();
         assert!(write_report(&directory, "../spectre-report.json", "data").is_err());
         assert!(write_report(&directory, "spectre-report.txt", "data").is_err());
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn report_export_enforces_the_local_size_limit() {
+        let directory = test_directory();
+        let oversized = "x".repeat(12 * 1024 * 1024 + 1);
+        assert!(write_report(&directory, "spectre-report.json", &oversized)
+            .unwrap_err()
+            .contains("12 MiB"));
         assert!(!directory.exists());
     }
 }

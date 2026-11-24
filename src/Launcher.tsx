@@ -1,5 +1,7 @@
 import { useLayoutEffect, useRef } from 'react';
 import type { Ref } from 'react';
+import { AVAILABLE_MODULES } from './modules/registry';
+import type { ModuleId } from './modules/registry';
 
 const glyphs = [
   [' .----.', '/ ,---\'', '\\ `--. ', ' `--- \\', '.---\' /', '\'----\' '],
@@ -122,7 +124,7 @@ export type LauncherMode = 'wordmark' | 'resolving' | 'ready' | 'shutting';
 export function Launcher({ mode, version, open, buttonRef }: {
   mode: LauncherMode;
   version: string;
-  open: () => void;
+  open: (moduleId: ModuleId) => void;
   buttonRef: Ref<HTMLButtonElement>;
 }) {
   const wordmarkOnly = mode === 'wordmark';
@@ -136,9 +138,13 @@ export function Launcher({ mode, version, open, buttonRef }: {
         {letters.map((letter, index) => <span key={index} className="wordmark-letter"
           style={{ '--letter-index': index } as React.CSSProperties}>{letter}</span>)}
       </span></h1>
-      {!wordmarkOnly && <button className="launcher-module" ref={buttonRef} onClick={open} disabled={mode !== 'ready'}>
-        <span className="launcher-indicator" aria-hidden="true" /><span className="launcher-key">[1]</span> BLACKBOX
-      </button>}
+      {!wordmarkOnly && <div className="launcher-modules" aria-label="Available modules">
+        {AVAILABLE_MODULES.map((module, index) => <button key={module.id} className="launcher-module"
+          style={{ '--module-index': index } as React.CSSProperties}
+          ref={index === 0 ? buttonRef : undefined} onClick={() => open(module.id)} disabled={mode !== 'ready'}>
+          <span className="launcher-indicator" aria-hidden="true" /><span className="launcher-key">[{module.key}]</span> {module.name}
+        </button>)}
+      </div>}
     </div>
     {mode === 'ready' && <div className="version">v{version}</div>}
   </main>;

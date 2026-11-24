@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Local-first desktop file inspection",
   "scripts": {
-    "test": "vitest run tests/analysis.test.ts tests/inspection.test.ts tests/stringScanner.test.ts",
+    "test": "vitest run tests/analysis.test.ts tests/inspection.test.ts tests/stringScanner.test.ts tests/recon.test.ts",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
@@ -11,7 +11,9 @@
     "test:e2e": "playwright test",
     "record:demo": "node scripts/record-blackbox.mjs",
     "record:animations": "node scripts/record-animation-restoration.mjs",
+    "record:recon": "node scripts/record-recon.mjs",
     "record:mission-3": "node scripts/record-development-mission-3.mjs",
+    "benchmark:recon-graph": "playwright test tests/recon-graph.spec.ts --reporter=line",
     "benchmark:inspection": "SPECTRE_INSPECTION_PERF=1 vitest run tests/inspection-large-files.perf.test.ts --reporter=verbose"
   },
   "repository": {

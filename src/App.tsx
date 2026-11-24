@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BootTerminal, BOOT_MESSAGES, Launcher } from './Launcher';
 import type { BootReadiness } from './Launcher';
-import { Workspace } from './blackbox/Workspace';
+import { ModuleHost } from './modules/ModuleHost';
+import type { ModuleId } from './modules/registry';
 import { demonstrationFile } from './blackbox/fixture';
 import { useInspection } from './blackbox/useInspection';
 import manifest from '../package.json';
@@ -18,6 +19,7 @@ const isBootScreen = (screen: Screen) => screen === 'boot-log' || screen.startsW
 export function App() {
   const [reduced, setReduced] = useState(() => matchMedia(motionPreference).matches);
   const [screen, setScreen] = useState<Screen>(() => matchMedia(motionPreference).matches ? 'launcher' : 'boot-log');
+  const [activeModule, setActiveModule] = useState<ModuleId>('blackbox');
   const [bootMessageCount, setBootMessageCount] = useState(0);
   const [bootReadiness, setBootReadiness] = useState<BootReadiness>({
     renderer: 'pending', fileInput: 'pending', worker: 'pending', frame: 'pending', fonts: 'pending',
@@ -114,7 +116,10 @@ export function App() {
     }
   }, [screen]);
 
-  const launch = useCallback(() => setScreen(reduced ? 'workspace' : 'opening-cut'), [reduced]);
+  const launch = useCallback((moduleId: ModuleId = activeModule) => {
+    setActiveModule(moduleId);
+    setScreen(reduced ? 'workspace' : 'opening-cut');
+  }, [activeModule, reduced]);
 
   const open = useCallback(() => input.current?.click(), []);
   const restoreFile = useCallback((_file: import('./blackbox/investigations').InvestigationFile) => input.current?.click(), []);
@@ -153,15 +158,18 @@ export function App() {
         search.current.focus();
         search.current.select();
       } else if (event.key === 'Escape') {
-        if ((screen === 'workspace' || screen === 'workspace-start') && document.activeElement instanceof HTMLInputElement) {
-          document.activeElement.blur();
+        const activeElement = document.activeElement;
+        const isTextEditor = activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement ||
+          (activeElement instanceof HTMLElement && activeElement.isContentEditable);
+        if ((screen === 'workspace' || screen === 'workspace-start') && isTextEditor) {
+          activeElement.blur();
           title.current?.focus();
         } else if (screen === 'workspace' || screen === 'workspace-start') back();
         else if (screen === 'opening-cut' || screen === 'opening-black') setScreen('workspace');
         else if (screen === 'closing-cut' || screen === 'closing-black') setScreen('launcher');
-      } else if (!shortcut && !event.altKey && !event.repeat && event.key === '1' && screen === 'launcher') {
+      } else if (!shortcut && !event.altKey && !event.repeat && screen === 'launcher' && (event.key === '1' || event.key === '2')) {
         event.preventDefault();
-        launch();
+        launch(event.key === '1' ? 'blackbox' : 'recon');
       }
     };
     window.addEventListener('keydown', key);
@@ -211,10 +219,11 @@ export function App() {
     }} />
     {screen === 'boot-log' && <BootTerminal messageCount={bootMessageCount} readiness={bootReadiness} />}
     {showLauncher && <Launcher mode={launcherMode} version={manifest.version} open={launch} buttonRef={launcherButton} />}
-    {showWorkspace && <Workspace inspection={inspection} pending={pending} error={error}
-      run={run} processingRun={processingRun} reanalyze={reanalyze} openSample={openSample}
-      activating={screen === 'workspace-start'} shuttingDown={screen === 'closing-cut'}
-      open={open} back={back} cancel={cancel} restoreFile={restoreFile} titleRef={title} searchRef={search} />}
+    {showWorkspace && <ModuleHost moduleId={activeModule}
+      blackbox={{ inspection, pending, error, run, processingRun, reanalyze, openSample,
+        activating: screen === 'workspace-start', shuttingDown: screen === 'closing-cut',
+        open, back, cancel, restoreFile, titleRef: title, searchRef: search }}
+      recon={{ active: screen !== 'closing-cut', activating: screen === 'workspace-start', back, titleRef: title }} />}
     {dragging && <div className="drop-overlay" aria-hidden="true"><div><span>FILE INCOMING</span><strong>{draggedName || 'Drop to begin analysis'}</strong></div></div>}
     {intakeAck && <div key={intakeAck.id} className="intake-ack" role="status"><span>RECEIVED</span><strong>{intakeAck.name}</strong></div>}
   </div>;

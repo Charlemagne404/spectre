@@ -18,9 +18,10 @@ import { EmbeddedSignaturesPane } from './EmbeddedSignaturesPane';
 import { createBookmark, createInvestigation, deleteInvestigation, isMatchingFile, listInvestigations, recordAnalysis, recordComparison, updateInvestigation } from './investigations';
 import type { BookmarkKind, Investigation, InvestigationBookmark, InvestigationFile } from './investigations';
 
-interface WorkspaceProps {
+export interface WorkspaceProps {
   inspection: Inspection | null;
   run: AnalysisRun | null;
+  processingRun: AnalysisRun | null;
   pending: boolean;
   error: string;
   activating: boolean;
