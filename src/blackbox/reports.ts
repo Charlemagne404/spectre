@@ -1,4 +1,5 @@
 import type { Analysis } from './model';
+import { saveNativeReport } from '../tauri';
 
 export interface ReportContext {
   id: string;
@@ -165,16 +166,21 @@ function safeFilename(name: string) {
   return name.replace(/\.[^.]*$/, '').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'file';
 }
 
-export function downloadReport(analysis: Analysis, format: 'json' | 'html', context?: ReportContext) {
+export async function downloadReport(analysis: Analysis, format: 'json' | 'html', context?: ReportContext): Promise<string | null> {
   const generatedAt = new Date().toISOString();
   const content = format === 'json'
     ? JSON.stringify(buildReport(analysis, generatedAt, context), null, 2)
     : buildHtmlReport(analysis, generatedAt, context);
   const mime = format === 'json' ? 'application/json' : 'text/html';
+  const fileName = 'spectre-' + safeFilename(analysis.name) + '-analysis.' + format;
+  const nativeSave = saveNativeReport(fileName, content);
+  if (nativeSave) return nativeSave;
+
   const url = URL.createObjectURL(new Blob([content], { type: mime }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = 'spectre-' + safeFilename(analysis.name) + '-analysis.' + format;
+  link.download = fileName;
   link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return null;
 }

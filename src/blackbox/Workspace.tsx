@@ -324,6 +324,7 @@ export function Workspace({ inspection, run, pending, error, activating, shuttin
   const [navigationRequest, setNavigationRequest] = useState<{ range: ByteRange; source: SelectionSource; token: number } | null>(null);
   const [storageError, setStorageError] = useState('');
   const [storageStatus, setStorageStatus] = useState('');
+  const [reportFeedback, setReportFeedback] = useState<{ label: string; detail: string; error: boolean } | null>(null);
   const navigationSequence = useRef(0);
   const analysis = inspection?.data ?? null;
 
@@ -451,6 +452,19 @@ export function Workspace({ inspection, run, pending, error, activating, shuttin
   }
 
   const reportSelection = useCallback((selection: SharedSelection | null) => setBookmarkSelection(selection), []);
+  async function exportReport(format: 'json' | 'html') {
+    setReportFeedback(null);
+    try {
+      const path = await downloadReport(inspection!.data, format, reportContextFor(activeInvestigation, inspection!.data));
+      setReportFeedback({ label: path ? 'Saved to Downloads' : 'Download started', detail: path ?? '', error: false });
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message
+        : typeof cause === 'string' ? cause
+          : cause && typeof cause === 'object' && 'message' in cause ? String(cause.message)
+            : String(cause);
+      setReportFeedback({ label: `Export failed: ${detail}`, detail, error: true });
+    }
+  }
   const requestBookmark = () => {
     const selected = bookmarkSelection;
     if (!selected || !analysis) { setStorageStatus('Select a byte range in a completed file first.'); setInvestigationOpen(true); return; }
@@ -459,7 +473,7 @@ export function Workspace({ inspection, run, pending, error, activating, shuttin
       : selected.source === 'strings' ? 'string'
         : selected.source === 'search' ? 'search'
           : selected.range.length === 1 ? 'byte' : 'range';
-    setBookmarkDraft({ range: selected.range, kind, structureLabel: region?.label });
+    setBookmarkDraft({ range: selected.range, kind, structureLabel: kind === 'structure' ? region?.label : undefined });
     setInvestigationOpen(true);
   };
 
@@ -486,8 +500,11 @@ export function Workspace({ inspection, run, pending, error, activating, shuttin
         <button type="button" className="quiet-button" onClick={openSample} title="Load the bundled RIFF/WAVE sample">Sample</button>
         {activeFile && <button type="button" className="quiet-button" onClick={reanalyze} disabled={pending}>Reanalyze</button>}
         {inspection && processingRun?.status === 'complete' && <div className="report-controls" aria-label="Export analysis report">
-          <button type="button" className="quiet-button" onClick={() => downloadReport(inspection.data, 'json', reportContextFor(activeInvestigation, inspection.data))}>JSON</button>
-          <button type="button" className="quiet-button" onClick={() => downloadReport(inspection.data, 'html', reportContextFor(activeInvestigation, inspection.data))}>HTML</button>
+          <button type="button" className="quiet-button" onClick={() => void exportReport('json')}>JSON</button>
+          <button type="button" className="quiet-button" onClick={() => void exportReport('html')}>HTML</button>
+          {reportFeedback && <span className={'report-feedback' + (reportFeedback.error ? ' is-error' : '')}
+            role={reportFeedback.error ? 'alert' : 'status'} aria-label={reportFeedback.detail || reportFeedback.label}
+            title={reportFeedback.detail || reportFeedback.label}>{reportFeedback.label}</span>}
         </div>}
         <button type="button" className="open-button" onClick={open}><Icon name="open" /> Open file</button>
       </div>

@@ -109,6 +109,19 @@ test('creates a local investigation, bookmarks a structure, and reopens it after
   await expect(page.locator('.hex-selection')).toContainText('0x00000024');
 });
 
+test('string bookmarks do not inherit an overlapping structure name', async ({ page }) => {
+  await launch(page);
+  await page.getByRole('button', { name: 'Investigation' }).click();
+  await page.getByRole('textbox', { name: 'New investigation name' }).fill('String selection case');
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+  await page.getByRole('button', { name: 'Close investigation panel' }).click();
+
+  await page.getByRole('button', { name: /RELAY 07 \/ reference capture/ }).click();
+  await page.getByRole('button', { name: 'Bookmark', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Bookmark label' })).toHaveValue('Range at 0x00000038');
+  await expect(page.locator('.bookmark-create .investigation-section-title')).toContainText('STRING');
+});
+
 test('deletes a local investigation without affecting the current file', async ({ page }) => {
   await launch(page);
   await page.getByRole('button', { name: 'Investigation' }).click();

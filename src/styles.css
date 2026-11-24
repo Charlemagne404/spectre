@@ -653,6 +653,8 @@ input::placeholder { color: var(--muted); opacity: 1; }
 .quiet-button:hover:not(:disabled) { border-color: var(--line); background: var(--surface); color: var(--ink); }
 .report-controls { display: flex; align-items: center; gap: 1px; padding-left: 5px; border-left: 1px solid var(--line); }
 .report-controls .quiet-button { min-width: 37px; color: var(--accent-light); }
+.report-feedback { max-width: 150px; overflow: hidden; padding: 0 4px; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.report-feedback.is-error { color: var(--accent-light); }
 .investigation-toggle { display: inline-flex; align-items: center; gap: 7px; max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
 .investigation-indicator { width: 5px; height: 11px; flex: 0 0 5px; border-left: 1px solid var(--accent); }
 .investigation-drawer {
