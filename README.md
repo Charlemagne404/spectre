@@ -13,6 +13,8 @@ npm run tauri dev
 
 `npm run tauri build` creates the release binary and host-specific bundles in `src-tauri/target/release/`. On macOS, `npm run tauri build -- --bundles app` builds the local application bundle. Use `npm run dev` for frontend development in a browser.
 
+On Linux, `npm run tauri build -- --bundles deb` builds the release binary and Debian package. Native JSON and HTML reports are saved in the operating system's Downloads folder; existing reports are kept and a numbered filename is used for duplicates. Browser development keeps the browser's normal download behavior.
+
 ## Intake and inspection
 
 Click **[1] BLACKBOX** or press **1**. Open a file through the system picker or drop it on the window. Use **Sample** to reopen the bundled WAVE file, **Reanalyze** to run the current file again, and **Open file** to replace it. A replacement terminates the current worker before starting the next one.
@@ -84,6 +86,8 @@ npm run benchmark:inspection
 ```
 
 The measured before/after results, performance targets, and measurement limits are recorded in [docs/large-file-performance.md](docs/large-file-performance.md). Generated recordings, screenshots, and performance fixtures are kept locally under `output/` and are not required to run the application or tests.
+
+The Linux native validation and known platform limits are recorded in [the native validation report](docs/native-validation-report.md). The `Native build` GitHub Actions workflow compiles the app on Linux, macOS, and Windows without publishing artifacts or requiring signing credentials; only Linux has been runtime-tested in this environment.
 
 For the small-file demonstrations, start the Vite server with `npm run dev`, then run:
 
