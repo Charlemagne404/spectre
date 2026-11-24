@@ -478,6 +478,20 @@ input::placeholder { color: var(--muted); opacity: 1; }
 .hex-footer strong { color: var(--secondary); font-weight: 510; }
 .hex-selection strong { color: var(--accent-light); }
 .footer-separator { margin: 0 7px; color: #6e6255; }
+.hex-number { display: inline-flex; align-items: center; gap: 4px; }
+.hex-number select, .byte-order-button {
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid #302e2a;
+  background: #10100f;
+  color: var(--secondary);
+  font: inherit;
+  font-size: 9px;
+}
+.byte-order-button { min-width: 29px; cursor: pointer; }
+.byte-order-button:hover:not(:disabled) { color: var(--accent-light); border-color: #5b4935; }
+.byte-order-button:disabled { opacity: .55; cursor: default; }
+.numeric-value { max-width: 19ch; overflow: hidden; color: var(--accent-light); font-size: 9px; text-overflow: ellipsis; }
 .histogram {
   background: #121211;
   padding: 9px var(--panel-x) 7px;

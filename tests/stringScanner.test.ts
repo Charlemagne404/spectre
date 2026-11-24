@@ -45,6 +45,23 @@ describe('incremental printable string scanner', () => {
     expect(findings.some(({ value }) => value.encoding === 'UTF-16LE')).toBe(false);
   });
 
+  it('skips long zero runs without losing strings on either side', () => {
+    const asciiBefore = new TextEncoder().encode('BEFORE');
+    const utfText = new Uint8Array(12);
+    for (let index = 0; index < 6; index++) utfText[index * 2] = 'MIDDLE'[index].charCodeAt(0);
+    const asciiAfter = new TextEncoder().encode('AFTER');
+    const bytes = new Uint8Array(asciiBefore.length + 4_096 + utfText.length + 4_096 + asciiAfter.length);
+    bytes.set(asciiBefore);
+    bytes.set(utfText, asciiBefore.length + 4_096);
+    bytes.set(asciiAfter, asciiBefore.length + 4_096 + utfText.length + 4_096);
+
+    expect(scanInChunks(bytes, 257).map(({ value }) => value)).toEqual([
+      { offset: 0, length: 6, text: 'BEFORE', encoding: 'ASCII' },
+      { offset: asciiBefore.length + 4_096, length: 12, text: 'MIDDLE', encoding: 'UTF-16LE' },
+      { offset: asciiBefore.length + 4_096 + utfText.length + 4_096, length: 5, text: 'AFTER', encoding: 'ASCII' },
+    ]);
+  });
+
   it('continues counting strings after the retained finding limit without emitting more entries', () => {
     const findings: StringFinding[] = [];
     const scanner = new StringScanner((finding) => { findings.push(finding); }, '', 2);

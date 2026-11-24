@@ -166,10 +166,12 @@ export async function analyzeFile(
   const hashInitializationStartedAt = performance.now();
   const sha = await createSHA256();
   phasesMs.sha256 += performance.now() - hashInitializationStartedAt;
-  const histogram = new Float64Array(256);
+  const histogram: Float64Array | Uint32Array = file.size <= 0xffff_ffff
+    ? new Uint32Array(256) : new Float64Array(256);
   const firstOffsets = new Array<number>(256).fill(-1);
-  const binCounts = new Float64Array(256);
   const binSize = Math.max(MIN_ENTROPY_WINDOW, Math.ceil(file.size / ENTROPY_REGION_LIMIT));
+  const binCounts: Float64Array | Uint32Array = binSize <= 0xffff_ffff
+    ? new Uint32Array(256) : new Float64Array(256);
   const entropy: EntropyBin[] = [];
   const strings: FileString[] = [];
   let totalStrings = 0;
@@ -230,16 +232,17 @@ export async function analyzeFile(
     const scanStartedAt = performance.now();
     for (let index = 0; index < bytes.length; index++) {
       const byte = bytes[index];
-      const offset = start + index;
-      histogram[byte]++;
-      if (firstOffsets[byte] < 0) firstOffsets[byte] = offset;
+      const previousCount = histogram[byte];
+      histogram[byte] = previousCount + 1;
+      if (previousCount === 0) firstOffsets[byte] = start + index;
       binCounts[byte]++;
       entropyLength++;
 
-      if (!stringIndexLimitReached) stringScanner.consume(byte, offset);
+      if (!stringIndexLimitReached) stringScanner.consume(byte, start + index);
 
-      if (entropyLength === binSize || offset + 1 === file.size) finishEntropy(offset + 1);
+      if (entropyLength === binSize) finishEntropy(start + index + 1);
     }
+    if (start + bytes.length === file.size && entropyLength) finishEntropy(file.size);
     phasesMs.statisticsAndStrings += performance.now() - scanStartedAt;
 
     const processed = start + bytes.length;
@@ -363,10 +366,14 @@ async function parseWave(file: File, signal?: AbortSignal) {
     regions: finishRegionMap(regions, file.size, 'Remaining bytes'),
     structure: { parser: 'RIFF / WAVE', mode: 'format-aware' as const, complete: false, limitation: 'The RIFF header is truncated.', warnings },
   };
-  const riffEnd = Math.min(file.size, 8 + little(bytes, 4));
-  if (8 + little(bytes, 4) > file.size) warnings.push('The RIFF length declares bytes beyond the end of the file.');
+  const declaredRiffEnd = 8 + little(bytes, 4);
+  const riffEnd = Math.min(file.size, declaredRiffEnd);
+  if (declaredRiffEnd < 12) warnings.push('The RIFF length is too short to include the WAVE form type.');
+  if (declaredRiffEnd > file.size) warnings.push('The RIFF length declares bytes beyond the end of the file.');
   let offset = 12;
-  let complete = false;
+  let sawFormat = false;
+  let sawCompleteFormat = false;
+  let sawData = false;
   let byteRate = 0;
   let dataBytes = 0;
   let chunkCount = 0;
@@ -386,9 +393,11 @@ async function parseWave(file: File, signal?: AbortSignal) {
     const kind: Region['kind'] = name === 'fmt ' ? 'format' : name === 'data' ? 'data' : name === 'LIST' ? 'metadata' : 'other';
     regions.push(region(name.trim() || 'Chunk', offset, length, kind));
     if (name === 'fmt ') {
+      sawFormat = true;
       const format = await readAt(file, offset + 8, Math.min(payload, 64), signal);
       if (format.length < 16) warnings.push('The WAVE fmt chunk is shorter than the required 16 bytes.');
       else {
+        sawCompleteFormat = true;
         const view = new DataView(format.buffer, format.byteOffset, format.byteLength);
         const code = view.getUint16(0, true);
         const channels = view.getUint16(2, true);
@@ -409,6 +418,7 @@ async function parseWave(file: File, signal?: AbortSignal) {
         if (code === 0xfffe && format.length >= 40) findings.push(parserFinding('Extensible subformat', little(format, 24) & 0xffff));
       }
     } else if (name === 'data') {
+      sawData = true;
       dataBytes += payload;
       findings.push(parserFinding('Audio data', `${payload.toLocaleString('en')} bytes`, offset + 8, payload, 'segment'));
     } else if (name === 'LIST' && payload >= 4) {
@@ -432,7 +442,10 @@ async function parseWave(file: File, signal?: AbortSignal) {
     chunkCount++;
   }
   if (chunkCount === 512 && offset < riffEnd) warnings.push('The 512-chunk WAVE parser limit was reached.');
-  complete = offset === riffEnd || riffEnd < 12;
+  if (!sawFormat) warnings.push('The WAVE fmt chunk was not found.');
+  if (!sawData) warnings.push('The WAVE data chunk was not found.');
+  const complete = declaredRiffEnd >= 12 && declaredRiffEnd <= file.size && offset === declaredRiffEnd
+    && sawFormat && sawCompleteFormat && sawData;
   if (byteRate && dataBytes) findings.push(parserFinding('Estimated duration', `${(dataBytes / byteRate).toFixed(3)} s`));
   return {
     regions: finishRegionMap(regions, file.size, 'Remaining bytes'),
@@ -1372,11 +1385,26 @@ async function parseSqlite(file: File, signal?: AbortSignal) {
 
   if (validPageSize && file.size >= pageSize) {
     const queue = [1];
+    const queued = new Set(queue);
     const visited = new Set<number>();
+    let queueCursor = 0;
+    let pageQueueCapped = false;
     let parsedSchemaRows = 0;
     let btreeValid = true;
-    while (queue.length && visited.size < 64 && parsedSchemaRows < 128) {
-      const pageNumber = queue.shift()!;
+    const enqueuePage = (pageNumber: number) => {
+      if (pageNumber < 1 || pageNumber > availablePages) return false;
+      if (queued.has(pageNumber)) return true;
+      if (queue.length >= 64) {
+        pageQueueCapped = true;
+        btreeValid = false;
+        return true;
+      }
+      queued.add(pageNumber);
+      queue.push(pageNumber);
+      return true;
+    };
+    while (queueCursor < queue.length && visited.size < 64 && parsedSchemaRows < 128) {
+      const pageNumber = queue[queueCursor++];
       if (visited.has(pageNumber) || pageNumber < 1 || pageNumber > availablePages) continue;
       visited.add(pageNumber);
       const pageOffset = (pageNumber - 1) * pageSize;
@@ -1410,12 +1438,10 @@ async function parseSqlite(file: File, signal?: AbortSignal) {
           const pointer = pageView.getUint16(pointerStart + cell * 2, false);
           if (pointer < pointerStart + cellCount * 2 || pointer + 4 > page.length) { warnings.push(`SQLite page ${pageNumber} has an invalid child-page cell pointer.`); btreeValid = false; continue; }
           const child = pageView.getUint32(pointer, false);
-          if (child >= 1 && child <= availablePages && !visited.has(child)) queue.push(child);
-          else if (child < 1 || child > availablePages) { warnings.push(`SQLite page ${pageNumber} references a child page outside the file.`); btreeValid = false; }
+          if (!enqueuePage(child)) { warnings.push(`SQLite page ${pageNumber} references a child page outside the file.`); btreeValid = false; }
         }
         const rightmost = pageView.getUint32(btree + 8, false);
-          if (rightmost >= 1 && rightmost <= availablePages && !visited.has(rightmost)) queue.push(rightmost);
-          else if (rightmost < 1 || rightmost > availablePages) { warnings.push(`SQLite page ${pageNumber} has an out-of-range rightmost child page.`); btreeValid = false; }
+        if (!enqueuePage(rightmost)) { warnings.push(`SQLite page ${pageNumber} has an out-of-range rightmost child page.`); btreeValid = false; }
       } else if (pageType === 0x0d) {
         for (let cell = 0; cell < cellCount && parsedSchemaRows < 128; cell++) {
           const cellOffset = pageView.getUint16(pointerStart + cell * 2, false);
@@ -1441,7 +1467,7 @@ async function parseSqlite(file: File, signal?: AbortSignal) {
         }
       }
     }
-    if (queue.length) { warnings.push('SQLite schema traversal was capped at 64 pages.'); btreeValid = false; }
+    if (pageQueueCapped) warnings.push('SQLite b-tree traversal was capped at 64 distinct pages.');
     if (parsedSchemaRows === 128) { warnings.push('SQLite schema listing was capped at 128 records.'); btreeValid = false; }
     if (!btreeValid) warnings.push('The sampled SQLite b-tree validation is incomplete.');
     return {

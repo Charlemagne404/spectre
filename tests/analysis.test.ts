@@ -129,6 +129,7 @@ describe('event-driven file analysis', () => {
     expect(result.type).toBe('RIFF / WAVE');
     expect(result.mime).toBe('audio/wav');
     expect(result.extensionMatch).toBe(true);
+    expect(result.structure.complete).toBe(true);
     expect(result.sha256).toBe(createHash('sha256').update(source).digest('hex'));
     expect(result.regions.map(({ label }) => label)).toEqual(['RIFF', 'fmt', 'LIST', 'data', 'JUNK']);
     expect(result.regions.reduce((total, item) => total + item.length, 0)).toBe(file.size);
@@ -216,6 +217,16 @@ describe('event-driven file analysis', () => {
     const capped = buildReport({ ...result, totalStrings: STRING_LIMIT, stringIndexLimitReached: true });
     expect(capped.detectedFacts.strings).toMatchObject({ totalFound: null, indexLimitReached: true });
     expect(capped.interpretations.some(({ subject }) => subject === 'String index limit')).toBe(true);
+  });
+
+  it('escapes imported names and printable file data in HTML reports', async () => {
+    const payload = new TextEncoder().encode('<script>window.spectrePwned=1</script>');
+    const result = await analyzeFile(testFile(payload, '\"><script>alert(1)</script>.bin'));
+    const html = buildHtmlReport(result, '2026-11-24T12:00:00.000Z');
+    expect(html).toContain('&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;.bin');
+    expect(html).toContain('&lt;script&gt;window.spectrePwned=1&lt;/script&gt;');
+    expect(html).not.toContain('<script>window.spectrePwned=1</script>');
+    expect(html).not.toContain('<script>alert(1)</script>');
   });
 
   it('follows PDF xref entries to its catalog and page tree', async () => {
@@ -364,6 +375,39 @@ describe('event-driven file analysis', () => {
     ]);
   });
 
+  it('bounds SQLite child-page traversal and deduplicates repeated references', async () => {
+    const pageSize = 1024;
+    const makeDatabase = (pageCount: number, childPages: number[], rightmost: number) => {
+      const bytes = new Uint8Array(pageSize * pageCount);
+      bytes.set(new TextEncoder().encode('SQLite format 3\0'));
+      const view = new DataView(bytes.buffer);
+      view.setUint16(16, pageSize, false);
+      view.setUint32(28, pageCount, false);
+      const root = 0;
+      bytes[root + 100] = 0x05;
+      view.setUint16(root + 103, childPages.length, false);
+      view.setUint16(root + 105, pageSize, false);
+      view.setUint32(root + 108, rightmost, false);
+      for (let index = 0; index < childPages.length; index++) {
+        const cell = pageSize - (index + 1) * 4;
+        view.setUint16(root + 112 + index * 2, cell, false);
+        view.setUint32(root + cell, childPages[index], false);
+      }
+      return bytes;
+    };
+
+    const duplicatePages = makeDatabase(2, Array(70).fill(2), 2);
+    duplicatePages[pageSize] = 0x0d;
+    new DataView(duplicatePages.buffer).setUint16(pageSize + 5, pageSize, false);
+    const duplicates = await analyzeFile(testFile(duplicatePages, 'repeated-pages.sqlite'));
+    expect(duplicates.structure.complete).toBe(true);
+    expect(duplicates.structure.warnings).not.toContain('SQLite b-tree traversal was capped at 64 distinct pages.');
+
+    const manyPages = await analyzeFile(testFile(makeDatabase(75, Array.from({ length: 70 }, (_, index) => index + 2), 72), 'many-pages.sqlite'));
+    expect(manyPages.structure.complete).toBe(false);
+    expect(manyPages.structure.warnings).toContain('SQLite b-tree traversal was capped at 64 distinct pages.');
+  });
+
   it('handles ELF headers and generic unknown byte ranges honestly', async () => {
     const elf = new Uint8Array(64);
     elf.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
@@ -389,6 +433,27 @@ describe('event-driven file analysis', () => {
       { label: 'Remaining bytes', kind: 'other', offset: 12, length: 8 },
     ]);
     expect(wave.structure.complete).toBe(false);
+
+    for (const declaredSize of [0, 4, 100]) {
+      const header = new Uint8Array([82, 73, 70, 70, 0, 0, 0, 0, 87, 65, 86, 69]);
+      new DataView(header.buffer).setUint32(4, declaredSize, true);
+      const result = await analyzeFile(testFile(header, `short-riff-${declaredSize}.wav`));
+      expect(result.structure.complete, `RIFF size ${declaredSize} must not be complete without bounded fmt/data chunks`).toBe(false);
+      expect(result.structure.warnings).toContain('The WAVE fmt chunk was not found.');
+      expect(result.structure.warnings).toContain('The WAVE data chunk was not found.');
+      if (declaredSize === 0) expect(result.structure.warnings).toContain('The RIFF length is too short to include the WAVE form type.');
+      if (declaredSize === 100) expect(result.structure.warnings).toContain('The RIFF length declares bytes beyond the end of the file.');
+    }
+
+    const shortFormat = new Uint8Array(32);
+    shortFormat.set(new TextEncoder().encode('RIFF'));
+    new DataView(shortFormat.buffer).setUint32(4, 24, true);
+    shortFormat.set(new TextEncoder().encode('WAVEfmt '), 8);
+    new DataView(shortFormat.buffer).setUint32(16, 4, true);
+    shortFormat.set(new TextEncoder().encode('data'), 24);
+    const invalidFormat = await analyzeFile(testFile(shortFormat, 'short-format.wav'));
+    expect(invalidFormat.structure.complete).toBe(false);
+    expect(invalidFormat.structure.warnings).toContain('The WAVE fmt chunk is shorter than the required 16 bytes.');
 
     const emptyFile = testFile(new Uint8Array(), 'empty');
     const empty = await analyzeFile(emptyFile);

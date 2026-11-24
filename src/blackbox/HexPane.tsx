@@ -4,6 +4,8 @@ import { address, contains, hex } from './model';
 import type { ByteRange } from './model';
 import { Pane } from './Pane';
 import { findBytePattern, parseBytePattern } from './byteSearch';
+import { interpretUnsigned } from './numeric';
+import type { ByteOrder, IntegerWidth } from './numeric';
 
 const ROW_BYTES = 16;
 const PAGE_BYTES = 64 * ROW_BYTES;
@@ -25,6 +27,9 @@ export function HexPane({ file, selection, firstByte, select, prefetched = EMPTY
   const start = page * PAGE_BYTES;
   const end = Math.min(start + PAGE_BYTES, file.size);
   const [data, setData] = useState<{ start: number; bytes: Uint8Array }>();
+  const [numericWidth, setNumericWidth] = useState<IntegerWidth>(4);
+  const [byteOrder, setByteOrder] = useState<ByteOrder>('little');
+  const [numericBytes, setNumericBytes] = useState<{ offset: number; bytes: Uint8Array | null }>();
   const [readError, setReadError] = useState<number>();
   const [jump, setJump] = useState('');
   const [jumpError, setJumpError] = useState(false);
@@ -38,6 +43,13 @@ export function HexPane({ file, selection, firstByte, select, prefetched = EMPTY
   const row = useRef<HTMLDivElement>(null);
   const bytes = data?.start === start ? data.bytes : undefined;
   const width = Math.max(8, hex(Math.max(0, file.size - 1), 1).length);
+  const currentNumericBytes = numericBytes?.offset === offset ? numericBytes.bytes : undefined;
+  const numericValue = currentNumericBytes instanceof Uint8Array
+    ? interpretUnsigned(currentNumericBytes, numericWidth, byteOrder) : null;
+  const numericLabel = !file.size ? 'NO BYTES'
+    : currentNumericBytes === undefined ? 'READING'
+    : currentNumericBytes === null ? 'UNAVAILABLE'
+      : numericValue?.hexadecimal ?? `NEED ${numericWidth} BYTES`;
 
   useEffect(() => {
     let active = true;
@@ -57,6 +69,20 @@ export function HexPane({ file, selection, firstByte, select, prefetched = EMPTY
     });
     return () => { active = false; };
   }, [file, start, end, prefetched, enabled]);
+
+  useEffect(() => {
+    let active = true;
+    if (!enabled || offset >= file.size) {
+      setNumericBytes(undefined);
+      return () => { active = false; };
+    }
+    file.slice(offset, Math.min(file.size, offset + 8)).arrayBuffer().then((buffer) => {
+      if (active) setNumericBytes({ offset, bytes: new Uint8Array(buffer) });
+    }).catch(() => {
+      if (active) setNumericBytes({ offset, bytes: null });
+    });
+    return () => { active = false; };
+  }, [file, offset, enabled]);
 
   useEffect(() => () => searchAbort.current?.abort(), []);
 
@@ -188,6 +214,20 @@ export function HexPane({ file, selection, firstByte, select, prefetched = EMPTY
       <span>VIEW <strong>{file.size ? hex(start, width) + '–' + hex(end - 1, width) : '—'}</strong></span>
       <span className="hex-selection" aria-live="polite">{selection ? <><strong>{address(offset, width)}</strong><span className="footer-separator">/</span>
         {selection.length.toLocaleString('en')} {selection.length === 1 ? 'byte' : 'bytes'}{firstByte === undefined ? '' : ' · ' + hex(firstByte)}</> : 'No selection'}</span>
+      <span className="hex-number">
+        <select aria-label="Unsigned integer width" value={numericWidth}
+          onChange={(event) => setNumericWidth(Number(event.target.value) as IntegerWidth)}>
+          <option value={1}>U8</option><option value={2}>U16</option><option value={4}>U32</option><option value={8}>U64</option>
+        </select>
+        <button type="button" className="byte-order-button" disabled={numericWidth === 1}
+          aria-label={`Switch to ${byteOrder === 'little' ? 'big' : 'little'}-endian`}
+          title={numericWidth === 1 ? 'Byte order has no effect for U8' : `Switch to ${byteOrder === 'little' ? 'big' : 'little'}-endian`}
+          onClick={() => setByteOrder((order) => order === 'little' ? 'big' : 'little')}>{byteOrder === 'little' ? 'LE' : 'BE'}</button>
+        <output className="numeric-value" aria-label="Interpreted unsigned integer"
+          title={numericValue ? `${numericWidth}-byte unsigned ${byteOrder}-endian · decimal ${numericValue.decimal}` : numericLabel}>
+          {numericLabel}
+        </output>
+      </span>
       <button type="button" className="copy-bytes" onClick={copySelection} disabled={!selection || !file.size} title={`Copy up to ${COPY_LIMIT.toLocaleString('en')} selected bytes`}><Icon name="copy" /> {copyStatus || 'Copy'}</button>
     </footer>
   </Pane>;

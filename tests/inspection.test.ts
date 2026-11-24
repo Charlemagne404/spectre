@@ -3,6 +3,7 @@ import { findBytePattern, parseBytePattern } from '../src/blackbox/byteSearch';
 import { applyAnalysisEvent, createAnalysisRun } from '../src/blackbox/analysisEvents';
 import { expandForPresentation, minimumPresentationDuration, presentationPhase, SMALL_FILE_PRESENTATION_LIMIT } from '../src/blackbox/analysisPresentation';
 import { intersects } from '../src/blackbox/model';
+import { interpretUnsigned } from '../src/blackbox/numeric';
 import type { AnalysisEvent } from '../src/blackbox/model';
 
 function fileFromBytes(bytes: Uint8Array, name: string) {
@@ -34,6 +35,22 @@ describe('hexadecimal search', () => {
     const controller = new AbortController();
     controller.abort();
     await expect(findBytePattern(file, new Uint8Array([0xff]), 0, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('hexadecimal integer interpretation', () => {
+  it('decodes unsigned values with either byte order, including 64-bit values', () => {
+    const riff = Uint8Array.from([0x52, 0x49, 0x46, 0x46]);
+    expect(interpretUnsigned(riff, 4, 'little')).toEqual({ hexadecimal: '0x46464952', decimal: '1179011410' });
+    expect(interpretUnsigned(riff, 4, 'big')?.hexadecimal).toBe('0x52494646');
+    expect(interpretUnsigned(Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]), 8, 'big')?.hexadecimal)
+      .toBe('0x0102030405060708');
+    expect(interpretUnsigned(Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]), 8, 'little')?.decimal)
+      .toBe('578437695752307201');
+  });
+
+  it('does not interpret a partial value past the available file bytes', () => {
+    expect(interpretUnsigned(Uint8Array.from([0x34, 0x12]), 4, 'little')).toBeNull();
   });
 });
 

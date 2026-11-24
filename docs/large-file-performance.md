@@ -1,31 +1,47 @@
 # BLACKBOX large-file performance
 
-## Current Ubuntu run — 2026-11-24
+## Ubuntu performance investigation — 2026-11-24
 
-This section records the release-candidate measurements on the current host. The Apple M2 runs below are historical and should not be compared as controlled before/after trials.
+These are browser measurements from the same Ubuntu host and headless Chromium. They are not a controlled comparison with the historical Apple M2 results below.
 
 - Ubuntu 24.04.5, Linux 7.0.0
 - Intel Core i5-9400F at 2.90 GHz (6 cores), 15 GiB RAM
 - Node.js 22.23.4, npm 10.9.9, Playwright 1.65.1, headless Chromium 159.0.8154.6
-- The host was under memory pressure during the session: about 10 GiB used, 4.8 GiB available, and 4 GiB of swap used with about 128 MiB free. Treat the results as single-run observations.
-- `tests/large-files.perf.spec.ts` generated disk-backed fixtures; expected SHA-256 values were independently calculated in Node and checked against the app.
+- Analysis chunk size: 512 KiB. The host showed about 4.9 GiB available memory and 4 GiB of swap in use during this session; treat all runs as observations rather than guarantees.
+- `tests/large-files.perf.spec.ts` generated disk-backed deterministic fixtures. The expected SHA-256 was independently calculated in Node and checked against the app for every measured file.
 
-| Fixture | Total time | Worker time | File ranges | SHA-256 | Statistics + strings | Parser | RSS growth | Max frame gap | Extra |
+### Fresh baseline and optimized browser runs
+
+| Fixture | Baseline total | Optimized total | Change | Optimized worker time | Optimized statistics + strings |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 10 MiB many strings | 0.914 s | 0.819 s | 10.4% faster | 0.286 s | 0.199 s |
+| 128 MiB high entropy | 4.301 s | 2.709 s | 37.0% faster | 2.342 s | 1.211 s |
+| 500 MiB repeated binary | 14.076 s | 7.421 s / 7.550 s / 7.527 s | 46.8% faster at 7.499 s mean | 6.998 s / 6.918 s / 7.100 s | 3.312 s / 3.262 s / 3.292 s |
+| 1 GiB sparse text | 51.566 s | 19.789 s / 19.564 s / 19.925 s | 61.7% faster at 19.759 s mean | 19.323 s / 19.260 s / 19.690 s | 11.352 s / 11.266 s / 11.662 s |
+
+The before/after figures came from one fresh baseline run and three optimized runs on the same machine. Host load and file-cache state can vary. The 500 MiB optimized range was 7.421–7.550 s (1.7%); the 1 GiB range was 19.564–19.925 s (1.8%). The final run in each case used the final code state.
+
+### Measured phases and responsiveness
+
+| Fixture | Total | File ranges | SHA-256 | Statistics + strings | Parser | RSS growth | Events/s | Max frame gap | Additional measurement |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 5 KiB repeated text | 2.463 s | 7.7 ms | 2.2 ms | 2.3 ms | 1.7 ms | 0.3 ms | 100 MiB | 83 ms | Existing paced reveal remains about 2.2 s |
-| 10 MiB many strings | 877 ms | 413 ms | 32.6 ms | 50.4 ms | 327.1 ms | 0.2 ms | 165 MiB | 166.8 ms | Full-file search beyond the index: 21 ms |
-| 10 MiB structured PNG | 1.16 s | 586 ms | 32.6 ms | 50.6 ms | 317.8 ms | 182.9 ms | 110.4 MiB | 99.9 ms | PNG parsed and digest verified |
-| 128 MiB high entropy | 4.271 s | 3.774 s | 429.4 ms | 571.2 ms | 2.768 s | 0.2 ms | 353.1 MiB | 116.7 ms | Digest verified |
-| 500 MiB repeated binary | 14.277 s | 13.565 s | 1.752 s | 2.190 s | 9.606 s | 0.3 ms | 312.6 MiB | 133.5 ms | Digest verified |
-| 1 GiB sparse text | 50.437 s | 49.968 s | 3.840 s | 4.466 s | 41.623 s | 0.3 ms | 245.4 MiB | 116.7 ms | Digest verified; hex jump near EOF: 193 ms |
+| 10 MiB many strings | 0.819 s | 33.3 ms | 50.9 ms | 198.9 ms | 0.3 ms | 139.3 MiB | 373.7 | 149.9 ms | Full-file string search: 27 ms |
+| 128 MiB high entropy | 2.709 s | 546.7 ms | 577.9 ms | 1.211 s | 0.3 ms | 279.7 MiB | 70.9 | 133.4 ms | Digest verified |
+| 500 MiB repeated binary | 7.527 s | 1.589 s | 2.204 s | 3.292 s | 0.3 ms | 284.5 MiB | 37.7 | 133.3 ms | Three-run optimized mean: 7.499 s |
+| 1 GiB sparse text | 19.925 s | 3.495 s | 4.502 s | 11.662 s | 0.4 ms | 233.3 MiB | 38.6 | 116.7 ms | Hex jump: 170 ms; three-run mean: 19.759 s |
 
-“File ranges” covers identity, initial preview, and streamed scan reads. Reads performed by a format parser are included in the parser phase.
+The final 1 GiB run's near-EOF jump was 170 ms; the earlier optimized repetitions measured 241 ms and 306 ms. This measurement includes browser input, React state update, and row-visibility checks, not just the underlying 1 KiB file read. All observations remain below the 1-second navigation target, though the spread shows end-to-end interaction timing is more variable than the bounded read itself.
 
-The 500 MiB case met the 20-second target. The 1 GiB case completed correctly but missed its 45-second target by about 5.4 seconds. Its measured statistics-and-strings phase took 41.6 seconds, roughly 83% of worker time; that byte-by-byte scan is the current optimization opportunity. The 500 MiB and 1 GiB RSS growth, frame-gap, and hex-navigation targets passed. The 10 MiB full-file search remained responsive. Cancellation during a 128 MiB scan was exercised twice, at 11.5 ms and 12.6 ms.
+Cancellation during a 128 MiB analysis completed in 11.5 ms in the final run (12.9 ms in an earlier run). The final 10 MiB full-file search for a marker beyond the initial string index took 27 ms. All measured browser analysis digests matched the independent fixture digests. The maximum animation-frame gap across the four final optimized fixtures was 149.9 ms. GNU `time` reported 29% average CPU for the final four-size performance command and no swap-in/out during that command; this invocation-level average includes fixture generation and is not a per-phase CPU reading.
 
-The max frame gap in the two 10 MiB cases remained below the 250 ms target, including 166.8 ms for the many-strings fixture. Every configured performance fixture passed its test assertions, including digest verification, layout checks, frame collection, random-access navigation, and cancellation. These tests use permissive responsiveness assertions; target comparisons above are engineering observations, not all encoded as hard test thresholds.
+### What changed and what the profiles show
 
-The default browser run passed 32 enabled cases across Chromium and WebKit, with 14 opt-in performance cases skipped by default. The opt-in suite was then exercised in two Chromium runs covering all seven cases (six file fixtures and cancellation). The final Tauri desktop binary was not built on this Ubuntu host because Rust and Cargo are not installed.
+- The main scan uses `Uint32Array` counters while counts fit the exact 32-bit range, with `Float64Array` fallback for files or entropy windows above that range. It reuses each histogram's prior count to detect first offsets and finalizes a partial entropy window after the last chunk instead of checking EOF on every byte.
+- `StringScanner` skips a NUL only when its ASCII and UTF-16LE states are inactive. Active string candidates still pass through the original state machine.
+- A temporary benchmark-only scan-disable switch was removed after use. Before optimization, a 1 GiB full scan measured 42.572 s in statistics/string work versus 33.206 s with string scanning disabled, an approximately 9.4 s scanner contribution. After the counter/EOF changes, a separate scan-disabled run measured 6.346 s for the statistics loop; the fast NUL path then reduced the full statistics/string phase from 16.133 s to 11.480 s in single runs. These comparisons are diagnostic estimates; the shipped phase metric continues to combine statistics and strings.
+- The 1 GiB case now completes in about 19.7 s on this host, well under the 45-second target. The 500 MiB case is about 7.5 s, well under 20 seconds. Browser UI frame gaps, digest checks, cancellation, and bounded random-access inspection also passed in the benchmark suite.
+
+The browser run does not verify a native Tauri build or a physical desktop WebView. Rustup is installed, but the project build stops at the missing `glib-2.0.pc` development package. The account lacks permission to install the required Linux development dependencies.
 
 ## Historical Apple M2 runs
 

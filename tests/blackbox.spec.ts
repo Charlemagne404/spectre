@@ -84,6 +84,18 @@ test.describe('inspection with reduced motion', () => {
     await expect(page.getByText('Sample file')).toBeVisible();
   });
 
+  test('interprets bytes as unsigned integers with explicit byte order', async ({ page }) => {
+    await launch(page);
+    const value = page.getByLabel('Interpreted unsigned integer');
+    await expect(value).toHaveText('0x46464952');
+    await page.getByRole('button', { name: 'Switch to big-endian' }).click();
+    await expect(value).toHaveText('0x52494646');
+    await page.getByRole('combobox', { name: 'Unsigned integer width' }).selectOption('8');
+    await expect(value).toHaveText('0x52494646007B0100');
+    await page.getByRole('combobox', { name: 'Unsigned integer width' }).selectOption('1');
+    await expect(page.getByRole('button', { name: 'Switch to little-endian' })).toBeDisabled();
+  });
+
   test('links structure, entropy, strings, and hex bytes', async ({ page }) => {
     await launch(page);
     await page.getByRole('button', { name: 'LIST', exact: true }).click();

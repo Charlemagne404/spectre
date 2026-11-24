@@ -43,6 +43,7 @@ export class StringScanner {
 
   consume(byte: number, offset: number) {
     if (this.finished) throw new Error('Cannot feed a finished string scanner.');
+    if (byte === 0 && this.asciiLength === 0 && this.utfMode === null) return false;
     let pause = false;
     if (byte >= 0x20 && byte <= 0x7e) {
       if (this.asciiLength === 0) {
