@@ -189,6 +189,8 @@ describe('event-driven file analysis', () => {
     expect(result.histogram).toEqual(Array(256).fill(1));
     expect(result.averageEntropy).toBe(8);
     expect(result.entropy).toEqual([{ offset: 0, length: 256, value: 8 }]);
+    expect(Object.values(result.metrics.phasesMs).every((value) => Number.isFinite(value) && value >= 0)).toBe(true);
+    expect(Object.values(result.metrics.phasesMs).reduce((sum, value) => sum + value, 0)).toBeLessThanOrEqual(result.metrics.durationMs + 1);
     expect(shannon([3, 1], 4)).toBeCloseTo(0.811278);
     expect(shannon(Array(256).fill(1), 256)).toBe(8);
   });

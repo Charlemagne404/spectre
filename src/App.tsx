@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BootTerminal, BOOT_MESSAGES, Launcher } from './Launcher';
+import { BootTerminal, Launcher } from './Launcher';
 import { Workspace } from './blackbox/Workspace';
 import { demonstrationFile } from './blackbox/fixture';
 import { useInspection } from './blackbox/useInspection';
@@ -11,13 +11,12 @@ type Screen =
   | 'closing-cut' | 'closing-black';
 
 const motionPreference = '(prefers-reduced-motion: reduce)';
-const bootLineDelay = (index: number) => 16 + ((index * 13) % 25) + (index % 9 === 6 ? 60 : 0);
 const isBootScreen = (screen: Screen) => screen === 'boot-log' || screen.startsWith('boot-');
 
 export function App() {
   const [reduced, setReduced] = useState(() => matchMedia(motionPreference).matches);
   const [screen, setScreen] = useState<Screen>(() => matchMedia(motionPreference).matches ? 'launcher' : 'boot-log');
-  const [bootMessageCount, setBootMessageCount] = useState(0);
+  const [bootMessages, setBootMessages] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
   const [draggedName, setDraggedName] = useState('');
   const [intakeAck, setIntakeAck] = useState<{ name: string; id: number } | null>(null);
@@ -28,6 +27,7 @@ export function App() {
   const title = useRef<HTMLHeadingElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const input = useRef<HTMLInputElement>(null);
+  const bootStartedAt = useRef(0);
   const { inspection, run, processingRun, pending, error, load, cancel } = useInspection();
 
   useEffect(() => {
@@ -51,20 +51,32 @@ export function App() {
 
     let timer: number | undefined;
     if (screen === 'boot-log') {
-      setBootMessageCount(1);
-      let index = 1;
-      const appendNext = () => {
-        if (index < BOOT_MESSAGES.length) {
-          timer = window.setTimeout(() => {
-            index += 1;
-            setBootMessageCount(index);
-            appendNext();
-          }, bootLineDelay(index));
-        } else {
-          timer = window.setTimeout(() => setScreen('boot-clear'), 170);
-        }
+      setBootMessages([]);
+      bootStartedAt.current = performance.now();
+      let active = true;
+      const log = (message: string) => {
+        if (!active) return;
+        const elapsed = Math.max(0, performance.now() - bootStartedAt.current);
+        setBootMessages((lines) => [...lines, `[+${elapsed.toFixed(0).padStart(4, ' ')} ms] ${message}`]);
       };
-      appendNext();
+      log('Spectre renderer mounted');
+      log('BLACKBOX interface graph ready');
+      log(`System motion preference: ${reduced ? 'reduced' : 'full'}`);
+      log(`Local file input mounted · ${input.current ? 'ready' : 'unavailable'}`);
+      log(`Analysis worker: ${typeof Worker === 'function' ? 'available on demand' : 'unavailable'}`);
+      const frame = window.requestAnimationFrame(() => {
+        log('First render frame delivered');
+        void document.fonts.ready.then(() => {
+          log('Local typography assets settled');
+          log('SPECTRE surface ready');
+          timer = window.setTimeout(() => setScreen('boot-clear'), 220);
+        });
+      });
+      return () => {
+        active = false;
+        window.cancelAnimationFrame(frame);
+        if (timer !== undefined) window.clearTimeout(timer);
+      };
     } else {
       const next: Partial<Record<Screen, { screen: Screen; delay: number }>> = {
         'boot-clear': { screen: 'boot-wordmark', delay: 190 },
@@ -72,7 +84,7 @@ export function App() {
         'boot-launcher': { screen: 'launcher', delay: 340 },
         'opening-cut': { screen: 'opening-black', delay: 190 },
         'opening-black': { screen: 'workspace-start', delay: 140 },
-        'workspace-start': { screen: 'workspace', delay: 1420 },
+        'workspace-start': { screen: 'workspace', delay: 720 },
         'closing-cut': { screen: 'closing-black', delay: 180 },
         'closing-black': { screen: 'launcher', delay: 140 },
       };
@@ -184,7 +196,7 @@ export function App() {
       event.target.value = '';
       if (file) importFile(file);
     }} />
-    {screen === 'boot-log' && <BootTerminal messageCount={bootMessageCount} />}
+    {screen === 'boot-log' && <BootTerminal messages={bootMessages} />}
     {showLauncher && <Launcher mode={launcherMode} version={manifest.version} open={launch} buttonRef={launcherButton} />}
     {showWorkspace && <Workspace inspection={inspection} pending={pending} error={error}
       run={run} processingRun={processingRun} reanalyze={reanalyze} openSample={openSample}

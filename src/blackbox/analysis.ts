@@ -141,6 +141,13 @@ export async function analyzeFile(
 ): Promise<Analysis> {
   const startedAt = new Date().toISOString();
   const analysisStart = performance.now();
+  const phasesMs = { fileRanges: 0, sha256: 0, statisticsAndStrings: 0, structureParser: 0 };
+  const readForPass = async (start: number, end: number) => {
+    const phaseStartedAt = performance.now();
+    const bytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
+    phasesMs.fileRanges += performance.now() - phaseStartedAt;
+    return bytes;
+  };
   let eventCount = 0;
   const emit = (event: AnalysisEventPayload) => {
     eventCount++;
@@ -149,14 +156,16 @@ export async function analyzeFile(
   checkCancelled(signal);
   emit({ type: 'FILE_RECEIVED', name: file.name, size: file.size });
   emit({ type: 'FILE_IDENTIFICATION_STARTED' });
-  const prefix = new Uint8Array(await file.slice(0, Math.min(file.size, 64 * 1024)).arrayBuffer());
+  const prefix = await readForPass(0, Math.min(file.size, 64 * 1024));
   checkCancelled(signal);
   const identity = identify(file, prefix);
   emit({ type: 'FILE_IDENTIFIED', identity });
-  const hexPreview = new Uint8Array(await file.slice(0, Math.min(file.size, 1024)).arrayBuffer());
+  const hexPreview = await readForPass(0, Math.min(file.size, 1024));
   if (hexPreview.length) emit({ type: 'HEX_DATA_AVAILABLE', offset: 0, bytes: Array.from(hexPreview) });
 
+  const hashInitializationStartedAt = performance.now();
   const sha = await createSHA256();
+  phasesMs.sha256 += performance.now() - hashInitializationStartedAt;
   const histogram = new Float64Array(256);
   const firstOffsets = new Array<number>(256).fill(-1);
   const binCounts = new Float64Array(256);
@@ -212,10 +221,13 @@ export async function analyzeFile(
   emit({ type: 'ENTROPY_ANALYSIS_STARTED', windowSize: binSize });
   for (let start = 0; start < file.size; start += CHUNK_SIZE) {
     checkCancelled(signal);
-    const bytes = new Uint8Array(await file.slice(start, Math.min(file.size, start + CHUNK_SIZE)).arrayBuffer());
+    const bytes = await readForPass(start, Math.min(file.size, start + CHUNK_SIZE));
     checkCancelled(signal);
+    const hashStartedAt = performance.now();
     sha.update(bytes);
+    phasesMs.sha256 += performance.now() - hashStartedAt;
 
+    const scanStartedAt = performance.now();
     for (let index = 0; index < bytes.length; index++) {
       const byte = bytes[index];
       const offset = start + index;
@@ -228,6 +240,7 @@ export async function analyzeFile(
 
       if (entropyLength === binSize || offset + 1 === file.size) finishEntropy(offset + 1);
     }
+    phasesMs.statisticsAndStrings += performance.now() - scanStartedAt;
 
     const processed = start + bytes.length;
     totalStrings = strings.length;
@@ -250,13 +263,17 @@ export async function analyzeFile(
   flushEntropyBatch();
   if (file.size === 0) emit({ type: 'BYTE_FREQUENCY_UPDATED', histogram: Array.from(histogram), firstOffsets: [...firstOffsets] });
   emit({ type: 'BYTE_FREQUENCY_COMPLETED', totalBytes: file.size });
+  const digestStartedAt = performance.now();
   const sha256 = sha.digest('hex');
+  phasesMs.sha256 += performance.now() - digestStartedAt;
   emit({ type: 'HASHING_COMPLETED', sha256 });
   emit({ type: 'ENTROPY_ANALYSIS_COMPLETED', averageEntropy: shannon(histogram, file.size) });
 
   checkCancelled(signal);
   emit({ type: 'STRUCTURE_PARSING_STARTED' });
+  const structureStartedAt = performance.now();
   const parsed = await parseStructure(file, identity, signal);
+  phasesMs.structureParser = performance.now() - structureStartedAt;
   checkCancelled(signal);
   const structureBatchSize = 32;
   for (let index = 0; index < parsed.regions.length; index += structureBatchSize) {
@@ -284,6 +301,7 @@ export async function analyzeFile(
       eventCount: eventCount + 1,
       eventsPerSecond: (eventCount + 1) / Math.max((performance.now() - analysisStart) / 1000, 0.001),
       chunkSize: CHUNK_SIZE,
+      phasesMs,
     },
     startedAt,
     completedAt,

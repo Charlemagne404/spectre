@@ -32,6 +32,28 @@ test('keyboard launcher and motion cancellation', async ({ page }) => {
   await expect(module).toBeFocused();
 });
 
+test('boot log records mounted readiness states instead of simulated work', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('.boot-log-line').first()).toContainText('Spectre renderer mounted');
+  await expect(page.locator('.boot-log-lines')).toContainText('Analysis worker: available on demand');
+  await expect(page.locator('.boot-log-lines')).toContainText('First render frame delivered');
+  await expect(page.locator('.boot-log-lines')).toContainText('SPECTRE surface ready');
+  const lines = page.locator('.boot-log-line');
+  await expect(lines).toHaveCount(8);
+  await expect(page.locator('.boot-log-lines')).not.toContainText('Allocating byte-frequency bins');
+});
+
+test('file intake remains usable while the workspace activation runs', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '[1] BLACKBOX' }).click();
+  await expect(page.locator('.workspace')).toHaveClass(/igniting/);
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open file', exact: true }).click();
+  await (await chooser).setFiles({ name: 'activation.txt', mimeType: 'text/plain', buffer: Buffer.from('opened during activation') });
+  await expect(page.getByRole('heading', { name: 'activation.txt' })).toBeVisible();
+  await expect(page.getByText('ANALYSIS COMPLETE', { exact: true })).toBeVisible({ timeout: 5_000 });
+});
+
 test('reveals small-file findings progressively after real analysis completes', async ({ page }) => {
   await openWorkspace(page);
   const payload = Buffer.from('small file, fully analyzed');
@@ -50,6 +72,7 @@ test.describe('inspection with reduced motion', () => {
 
   test('keeps all panes intentional and empty until the sample is requested', async ({ page }) => {
     await openWorkspace(page);
+    await expect(page.locator('.workspace')).not.toHaveClass(/igniting/);
     await expect(page.getByText('No file loaded.', { exact: true })).toBeVisible();
     await expect(page.getByText('No measurements.', { exact: true })).toHaveCount(2);
     await expect(page.getByText('No extracted strings.', { exact: true })).toBeVisible();
@@ -214,6 +237,7 @@ test.describe('inspection with reduced motion', () => {
       }
       await page.locator('input[type=file]').setInputFiles(path);
       await expect(page.getByRole('progressbar')).toBeVisible();
+      await expect(page.locator('.analysis-readout > span').first()).toHaveText('HASHING + BYTE STATISTICS');
       await expect(page.getByRole('heading', { name: 'large.bin' })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Cancel analysis' })).toBeEnabled();
       await expect(page.getByRole('searchbox')).toBeDisabled();
@@ -245,6 +269,34 @@ test.describe('inspection with reduced motion', () => {
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
       expect(await page.locator('.hex-scroll').evaluate((node) => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+    });
+  }
+
+  for (const [width, height] of [[1024, 768], [740, 580]]) {
+    test('adapts without horizontal overflow at ' + width + ' × ' + height, async ({ page }) => {
+      await page.setViewportSize({ width, height });
+      await launch(page);
+      const documentMetrics = await page.evaluate(() => ({
+        width: document.documentElement.scrollWidth,
+        layoutWidth: document.documentElement.clientWidth,
+        viewportWidth: window.innerWidth,
+        height: document.documentElement.scrollHeight,
+        viewportHeight: document.documentElement.clientHeight,
+      }));
+      expect(documentMetrics.width).toBe(documentMetrics.layoutWidth);
+      expect(documentMetrics.layoutWidth).toBeLessThanOrEqual(documentMetrics.viewportWidth);
+      for (const selector of ['.file-pane', '.entropy-pane', '.strings-pane', '.hex-pane', '.histogram']) {
+        const rect = await page.locator(selector).boundingBox();
+        expect(rect, `${selector} exists at ${width} × ${height}`).not.toBeNull();
+        if (!rect) throw new Error(selector + ' is missing');
+        expect(rect.x).toBeGreaterThanOrEqual(0);
+        expect(rect.x + rect.width).toBeLessThanOrEqual(width);
+        expect(rect.y + rect.height).toBeLessThanOrEqual(documentMetrics.height);
+      }
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await expect(page.locator('.strings-pane')).toBeInViewport();
+      await expect(page.getByRole('button', { name: 'Open file', exact: true })).toBeAttached();
+      expect(documentMetrics.height).toBeGreaterThanOrEqual(documentMetrics.viewportHeight);
     });
   }
 });

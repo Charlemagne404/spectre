@@ -1,6 +1,35 @@
 # BLACKBOX large-file performance
 
-## Measurement environment
+## Current Ubuntu run — 2026-11-24
+
+This section records the release-candidate measurements on the current host. The Apple M2 runs below are historical and should not be compared as controlled before/after trials.
+
+- Ubuntu 24.04.5, Linux 7.0.0
+- Intel Core i5-9400F at 2.90 GHz (6 cores), 15 GiB RAM
+- Node.js 22.23.4, npm 10.9.9, Playwright 1.65.1, headless Chromium 159.0.8154.6
+- The host was under memory pressure during the session: about 10 GiB used, 4.8 GiB available, and 4 GiB of swap used with about 128 MiB free. Treat the results as single-run observations.
+- `tests/large-files.perf.spec.ts` generated disk-backed fixtures; expected SHA-256 values were independently calculated in Node and checked against the app.
+
+| Fixture | Total time | Worker time | File ranges | SHA-256 | Statistics + strings | Parser | RSS growth | Max frame gap | Extra |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 5 KiB repeated text | 2.463 s | 7.7 ms | 2.2 ms | 2.3 ms | 1.7 ms | 0.3 ms | 100 MiB | 83 ms | Existing paced reveal remains about 2.2 s |
+| 10 MiB many strings | 877 ms | 413 ms | 32.6 ms | 50.4 ms | 327.1 ms | 0.2 ms | 165 MiB | 166.8 ms | Full-file search beyond the index: 21 ms |
+| 10 MiB structured PNG | 1.16 s | 586 ms | 32.6 ms | 50.6 ms | 317.8 ms | 182.9 ms | 110.4 MiB | 99.9 ms | PNG parsed and digest verified |
+| 128 MiB high entropy | 4.271 s | 3.774 s | 429.4 ms | 571.2 ms | 2.768 s | 0.2 ms | 353.1 MiB | 116.7 ms | Digest verified |
+| 500 MiB repeated binary | 14.277 s | 13.565 s | 1.752 s | 2.190 s | 9.606 s | 0.3 ms | 312.6 MiB | 133.5 ms | Digest verified |
+| 1 GiB sparse text | 50.437 s | 49.968 s | 3.840 s | 4.466 s | 41.623 s | 0.3 ms | 245.4 MiB | 116.7 ms | Digest verified; hex jump near EOF: 193 ms |
+
+“File ranges” covers identity, initial preview, and streamed scan reads. Reads performed by a format parser are included in the parser phase.
+
+The 500 MiB case met the 20-second target. The 1 GiB case completed correctly but missed its 45-second target by about 5.4 seconds. Its measured statistics-and-strings phase took 41.6 seconds, roughly 83% of worker time; that byte-by-byte scan is the current optimization opportunity. The 500 MiB and 1 GiB RSS growth, frame-gap, and hex-navigation targets passed. The 10 MiB full-file search remained responsive. Cancellation during a 128 MiB scan was exercised twice, at 11.5 ms and 12.6 ms.
+
+The max frame gap in the two 10 MiB cases remained below the 250 ms target, including 166.8 ms for the many-strings fixture. Every configured performance fixture passed its test assertions, including digest verification, layout checks, frame collection, random-access navigation, and cancellation. These tests use permissive responsiveness assertions; target comparisons above are engineering observations, not all encoded as hard test thresholds.
+
+The default browser run passed 32 enabled cases across Chromium and WebKit, with 14 opt-in performance cases skipped by default. The opt-in suite was then exercised in two Chromium runs covering all seven cases (six file fixtures and cancellation). The final Tauri desktop binary was not built on this Ubuntu host because Rust and Cargo are not installed.
+
+## Historical Apple M2 runs
+
+### Measurement environment
 
 - MacBook Air, Apple M2 (`T8112`), 8 GiB RAM
 - macOS 26.5.1
@@ -10,7 +39,7 @@
 
 The browser performance suite was run on the host machine with one Playwright worker. Hashes were compared with Node's independent SHA-256 implementation. The 500 MiB before measurement used the earlier 1 MiB read chunk. The first streaming run used a 512 KiB read chunk; a later hard-cap change stopped the primary string pass at 50,000 entries. Results are single-run measurements, so treat them as engineering observations rather than statistical comparisons.
 
-## Before and after
+### Before and after
 
 | Fixture | Earlier total time | Streaming total time | Worker time | Events/s | Frame gap max | RSS peak (growth over baseline) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -20,7 +49,7 @@ The first 500 MiB streaming pass completed about 22% faster in that run. Its dig
 
 The selected 512 KiB chunk was compared with 256 KiB, 1 MiB, and 2 MiB chunks on the 128 MiB high-entropy fixture. Worker times were 4.92 s, 3.85 s, 4.24 s, and 4.01 s respectively. The 512 KiB setting was fastest in these single trials and had a lower observed maximum frame gap than the 256 KiB and 1 MiB trials. The setting is configurable through `VITE_ANALYSIS_CHUNK_SIZE` (64 KiB–4 MiB).
 
-## Streaming run results
+### Streaming run results
 
 | Fixture | Total time | Worker time | Events | Events/s | Max frame gap | RSS peak (growth) | Additional measurement |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
@@ -33,7 +62,7 @@ The selected 512 KiB chunk was compared with 256 KiB, 1 MiB, and 2 MiB chunks on
 
 The 5 KiB file retains the existing approximately 2.2-second progressive reveal even though its analysis completes in 14.5 ms. The 1 GiB case completed and supported a random-access hex jump at offset `0x3FFFFFFF` without scanning preceding bytes for the jump.
 
-## Latest bounded-index run
+### Historical bounded-index run on Apple M2
 
 After the primary string pass was changed to stop string-specific work at 50,000 indexed entries, a targeted Chromium run measured:
 
@@ -44,9 +73,9 @@ After the primary string pass was changed to stop string-specific work at 50,000
 
 Cancellation of a 128 MiB analysis completed in 876 ms in the same targeted run. At measurement time the host showed high system pressure: 7.53 GiB of 8 GiB in use, 2.51 GiB compressed, and a 14.61 one-minute load average. The latest 500 MiB trial missed the 20-second and 250 ms frame-gap targets; its process-tree RSS growth stayed below the 600 MiB target. The earlier 13.03-second run was faster but used the pre-cap scanner and ran under different load, so the two numbers are not a controlled before/after comparison. The 1 GiB result above is also from the earlier implementation and has not yet been rerun after the cap change.
 
-## Working performance targets
+### Working performance targets
 
-These are local engineering targets for the documented 8 GiB MacBook Air test environment. The latest bounded-index 500 MiB trial missed the time and frame-gap targets; the earlier 1 GiB result predates that change:
+These local engineering targets were initially calibrated on the documented 8 GiB MacBook Air and are also used to assess the current Ubuntu run. The historical bounded-index 500 MiB trial missed the time and frame-gap targets; its 1 GiB result predates that change:
 
 - 500 MiB analysis completes within 20 seconds.
 - 1 GiB analysis completes within 45 seconds.
@@ -57,15 +86,15 @@ These are local engineering targets for the documented 8 GiB MacBook Air test en
 
 These are local engineering targets, not CI service-level guarantees. They should be recalibrated when hardware, OS, WebView, or fixture generation changes.
 
-## Memory and measurement limits
+### Memory and measurement limits
 
 The main analysis path retains at most one 512 KiB input slice at a time, 256 frequency counters, at most 512 entropy windows, and an index of at most 50,000 string entries with fixed-size previews. The source is a `File` handle and random-access panes read requested ranges. A separate full-file string query retains a 1 MiB slice and at most 50,000 matches for that query. The visible list renders at most 100 rows.
 
 The reported RSS is a 250 ms sampled sum of the Playwright worker and descendant processes, including Chromium and Vite. It is not application-private memory, can miss short-lived peaks, and may count shared pages more than once. The browser's exposed JavaScript heap measurement also excludes the analysis worker and was not useful for comparing these runs. These measurements are therefore coarse process-tree evidence; they do not establish a precise native-app memory ceiling. The 1 GiB run's lower RSS growth than the 500 MiB run is consistent with bounded memory, but the variance reinforces that this is not a precise per-process allocation profile.
 
-The native Tauri app uses macOS WKWebView. The host desktop app was exercised on macOS 26.5.1 / Apple M2 with an actual 500 MiB file, but no reliable native-app timing or memory profile was captured. The final Chromium and WebKit browser suite passed. A 128 MiB WebKit run took 29.3 seconds after increasing the hash-visibility timeout to 60 seconds. The application analyzes local bytes only, does not execute imported content, and does not extract archives.
+The native Tauri app uses macOS WKWebView. In an earlier macOS session the host desktop app was exercised on macOS 26.5.1 / Apple M2 with an actual 500 MiB file, but no reliable native-app timing or memory profile was captured. A 128 MiB WebKit run in that session took 29.3 seconds after increasing the hash-visibility timeout to 60 seconds. The application analyzes local bytes only, does not execute imported content, and does not extract archives.
 
-The final full browser run passed all 24 enabled tests across Chromium and WebKit; the 14 opt-in performance tests were skipped by the default suite. Native desktop recordings and the generated fixture manifest were retained locally under `output/` and are excluded from the source repository. The fixtures are generated test files; the 500 MiB binary fixture is also generated locally.
+At the time of that earlier macOS session, the full browser run passed 24 enabled tests across Chromium and WebKit; the 14 opt-in performance tests were skipped by the default suite. Native desktop recordings and generated fixture manifests from that session were retained locally under `output/` and are excluded from the source repository. The fixtures are generated test files; the 500 MiB binary fixture is also generated locally.
 
 ## Reproduction
 

@@ -53,7 +53,8 @@ function displayForRun(run: AnalysisRun): DisplayAnalysis {
     totalStrings: run.totalStrings,
     stringIndexLimitReached: run.stringIndexLimitReached,
     averageEntropy: run.averageEntropy ?? 0,
-    metrics: { durationMs: 0, eventCount: 0, eventsPerSecond: 0, chunkSize: 1024 * 1024 },
+    metrics: { durationMs: 0, eventCount: 0, eventsPerSecond: 0, chunkSize: 1024 * 1024,
+      phasesMs: { fileRanges: 0, sha256: 0, statisticsAndStrings: 0, structureParser: 0 } },
     startedAt: run.startedAt,
     completedAt: '',
   };
@@ -176,7 +177,7 @@ function AnalysisStatus({ run, processing, cancel }: { run: AnalysisRun; process
           : processing.stage === 'received' ? 'FILE RECEIVED'
             : processing.stage === 'identification' ? 'IDENTIFYING FILE'
               : processing.stage === 'fingerprinting' ? 'HASHING + BYTE STATISTICS'
-                : processing.stage === 'statistics' ? 'CALCULATING STATISTICS'
+                : processing.stage === 'statistics' ? processing.sha256 ? 'CALCULATING STATISTICS' : 'HASHING + BYTE STATISTICS'
                   : processing.stage === 'structure' ? 'PARSING STRUCTURE'
                     : 'ANALYZING';
   const progress = processing.processed;

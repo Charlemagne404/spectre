@@ -64,7 +64,13 @@ export interface Analysis {
   totalStrings: number;
   stringIndexLimitReached: boolean;
   averageEntropy: number;
-  metrics: { durationMs: number; eventCount: number; eventsPerSecond: number; chunkSize: number };
+  metrics: {
+    durationMs: number;
+    eventCount: number;
+    eventsPerSecond: number;
+    chunkSize: number;
+    phasesMs: { fileRanges: number; sha256: number; statisticsAndStrings: number; structureParser: number };
+  };
   startedAt: string;
   completedAt: string;
 }
