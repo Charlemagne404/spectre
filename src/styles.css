@@ -103,6 +103,21 @@ button, a, input { touch-action: manipulation; }
   overflow: hidden;
   background: #000;
 }
+.boot-meta {
+  position: absolute;
+  inset: clamp(18px, 3.2vh, 34px) clamp(22px, 4.5vw, 72px) auto;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+  color: #77736a;
+  font-size: clamp(7px, .62vw, 9px);
+  letter-spacing: .075em;
+  line-height: 1.5;
+  text-transform: uppercase;
+}
+.boot-sequence-label { flex: 0 0 auto; color: #a28a68; }
+.boot-live-status { min-width: 0; flex: 1; color: #5c5b56; text-align: right; }
 .boot-log-window {
   width: min(72vw, 1080px);
   height: min(74vh, 720px);
@@ -566,27 +581,57 @@ input::placeholder { color: var(--muted); opacity: 1; }
 }
 .drop-overlay div { padding: 20px 25px; border: 1px dashed var(--accent); color: var(--accent-light); }
 
-.igniting .workspace-grid { animation: backplane-online 120ms ease-out both; }
-.igniting .pane, .igniting .histogram { position: relative; }
-.igniting .pane::before, .igniting .histogram::before {
-  content: '';
-  position: absolute;
-  z-index: 2;
-  inset: 0 0 auto;
-  height: 2px;
-  background: var(--accent-light);
-  transform: scaleX(0);
-  transform-origin: left;
-  animation: pane-edge-online 230ms var(--activation-delay, 0ms) ease-out both;
-  pointer-events: none;
+.igniting .workspace-identity { opacity: 0; animation: content-online 150ms 95ms ease-out both; }
+.igniting .workspace-header .open-button { opacity: 0; animation: control-online 145ms 1240ms ease-out both; }
+.igniting .workspace-header .workspace-controls > .quiet-button,
+.igniting .workspace-header .workspace-controls > .report-controls {
+  opacity: 0;
+  animation: control-online 145ms 180ms ease-out both;
 }
-.igniting .file-pane { --activation-delay: 35ms; }
-.igniting .entropy-pane { --activation-delay: 125ms; }
-.igniting .strings-pane { --activation-delay: 215ms; }
-.igniting .hex-pane { --activation-delay: 305ms; }
-.igniting .histogram { --activation-delay: 395ms; }
-.igniting .structure-map { clip-path: inset(0 100% 0 0); animation: structure-resolve 230ms 175ms ease-out both; }
-.igniting .plot-trace { clip-path: inset(-3px 100% -3px -3px); animation: trace-resolve 300ms 285ms cubic-bezier(.2,.7,.25,1) both; }
+.igniting .workspace-grid { animation: backplane-online 150ms 35ms linear both; }
+.igniting .pane, .igniting .histogram {
+  opacity: 0;
+  animation-name: var(--fixture, fixture-quick);
+  animation-duration: var(--fixture-duration, 300ms);
+  animation-delay: var(--fixture-delay, 0ms);
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+}
+.igniting .file-pane { --fixture: fixture-eager; --fixture-delay: 60ms; --fixture-duration: 300ms; --heading-delay: 280ms; }
+.igniting .entropy-pane { --fixture: fixture-double; --fixture-delay: 225ms; --fixture-duration: 320ms; --heading-delay: 425ms; }
+.igniting .strings-pane { --fixture: fixture-stumble; --fixture-delay: 395ms; --fixture-duration: 310ms; --heading-delay: 585ms; }
+.igniting .hex-pane { --fixture: fixture-double; --fixture-delay: 555ms; --fixture-duration: 330ms; --heading-delay: 760ms; }
+.igniting .histogram { --fixture: fixture-steady; --fixture-delay: 715ms; --fixture-duration: 290ms; --heading-delay: 910ms; }
+.igniting .pane-heading, .igniting .histogram-head { opacity: 0; animation: content-online 150ms var(--heading-delay, 0ms) ease-out both; }
+.igniting .file-info { opacity: 0; animation: content-online 160ms 390ms ease-out both; }
+.igniting .structure-heading { opacity: 0; animation: content-online 130ms 565ms ease-out both; }
+.igniting .structure-map { clip-path: inset(0 100% 0 0); animation: structure-resolve 280ms 620ms ease-out both; }
+.igniting .structure-labels { opacity: 0; animation: content-online 160ms 900ms ease-out both; }
+.igniting .structure-detail { opacity: 0; animation: content-online 140ms 1040ms ease-out both; }
+.igniting .entropy-body { opacity: 0; animation: content-online 170ms 515ms ease-out both; }
+.igniting .plot-trace { clip-path: inset(-3px 100% -3px -3px); animation: trace-resolve 400ms 720ms cubic-bezier(.2,.7,.25,1) both; }
+.igniting .strings-search { opacity: 0; animation: control-online 140ms 700ms ease-out both; }
+.igniting .string-columns { opacity: 0; animation: content-online 140ms 710ms ease-out both; }
+.igniting .strings-list { clip-path: inset(0 0 100% 0); animation: rows-resolve 250ms 800ms ease-out both; }
+.igniting .strings-footer { opacity: 0; animation: content-online 140ms 1070ms ease-out both; }
+.igniting .hex-columns { opacity: 0; animation: content-online 140ms 870ms ease-out both; }
+.igniting .hex-scroll { clip-path: inset(0 0 100% 0); animation: rows-resolve 280ms 940ms ease-out both; }
+.igniting .hex-footer { opacity: 0; animation: content-online 140ms 1110ms ease-out both; }
+.igniting .hex-pane .pane-actions { opacity: 0; animation: control-online 145ms 600ms ease-out both; }
+.igniting .digest .icon-button, .igniting .region-label, .igniting .strings-footer button {
+  opacity: 0;
+  animation: control-online 145ms 1240ms ease-out both;
+}
+.igniting .histogram-plot svg { transform: scaleY(0); transform-origin: bottom; animation: histogram-resolve 420ms 950ms cubic-bezier(.22,.68,.26,1) both; }
+.igniting .histogram-ticks { opacity: 0; animation: content-online 140ms 1160ms ease-out both; }
+.igniting .analysis-status, .igniting .workspace-error { opacity: 0; animation: content-online 150ms 400ms ease-out both; }
+.igniting .pane-empty-state, .igniting .entropy-empty, .igniting .histogram-empty {
+  opacity: 0;
+  animation: content-online 160ms 1090ms ease-out both;
+}
+.igniting .parser-findings { opacity: 0; animation: content-online 140ms 900ms ease-out both; }
+.igniting .embedded-signatures, .igniting .structure-limitation { opacity: 0; animation: content-online 140ms 1040ms ease-out both; }
+.igniting .investigation-drawer, .igniting .comparison-overlay { animation: content-online 150ms ease-out both; }
 .powering-down { animation: workspace-cut 180ms steps(1, end) both; pointer-events: none; }
 
 @keyframes boot-line { from { opacity: .58; } to { opacity: 1; } }
@@ -594,9 +639,15 @@ input::placeholder { color: var(--muted); opacity: 1; }
 @keyframes launcher-resolution { from { transform: translateY(10vh); } to { transform: translateY(0); } }
 @keyframes selector-resolution { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 @keyframes launcher-cut { 0%, 31% { opacity: 1; } 32%, 100% { opacity: 0; } }
+@keyframes content-online { from { opacity: 0; } to { opacity: 1; } }
+@keyframes control-online { 0% { opacity: 0; } 52% { opacity: .62; } 100% { opacity: 1; } }
 @keyframes backplane-online { from { background-color: #000; border-color: #000; } to { background-color: var(--line); border-color: var(--line); } }
-@keyframes pane-edge-online { 0% { transform: scaleX(0); opacity: .9; } 82% { transform: scaleX(1); opacity: .65; } 100% { transform: scaleX(1); opacity: 0; } }
+@keyframes fixture-eager { 0% { opacity: .02; } 14% { opacity: 1; } 22% { opacity: .46; } 31% { opacity: .15; } 44% { opacity: .84; } 55% { opacity: .52; } 70% { opacity: .94; } 100% { opacity: 1; } }
+@keyframes fixture-double { 0% { opacity: .02; } 17% { opacity: .96; } 23% { opacity: .2; } 34% { opacity: .1; } 41% { opacity: .87; } 48% { opacity: .36; } 62% { opacity: .92; } 100% { opacity: 1; } }
+@keyframes fixture-stumble { 0% { opacity: .01; } 23% { opacity: .62; } 30% { opacity: .06; } 44% { opacity: .12; } 56% { opacity: .8; } 64% { opacity: .36; } 78% { opacity: .95; } 100% { opacity: 1; } }
+@keyframes fixture-steady { 0% { opacity: .03; } 29% { opacity: 1; } 36% { opacity: .68; } 44% { opacity: .94; } 100% { opacity: 1; } }
 @keyframes structure-resolve { to { clip-path: inset(0); } }
+@keyframes rows-resolve { to { clip-path: inset(0); } }
 @keyframes trace-resolve { to { clip-path: inset(-3px); } }
 @keyframes histogram-resolve { to { transform: scaleY(1); } }
 @keyframes workspace-cut { 0%, 31% { opacity: 1; } 32%, 100% { opacity: 0; } }
@@ -614,6 +665,15 @@ input::placeholder { color: var(--muted); opacity: 1; }
   .hex-pane, .histogram { grid-column: 5 / 13; }
   .hex-layout { padding-inline: 10px; }
   .hex-row { font-size: 11px; }
+}
+@media (max-width: 580px) {
+  .boot-meta {
+    inset: 15px 16px auto;
+    display: grid;
+    gap: 5px;
+    font-size: 7px;
+  }
+  .boot-live-status { text-align: left; }
 }
 @media (max-width: 830px) {
   .workspace { height: auto; min-height: 100vh; }

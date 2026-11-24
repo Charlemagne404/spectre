@@ -22,9 +22,22 @@ test('keyboard launcher and motion cancellation', async ({ page }) => {
   await page.keyboard.press('Escape');
   const module = page.getByRole('button', { name: '[1] BLACKBOX' });
   await expect(module).toBeFocused();
+  const activationStartedAt = Date.now();
   await page.keyboard.press('1');
   await expect(page.locator('.workspace')).toHaveClass(/igniting/);
+  const fixtures = await page.evaluate(() => ['.file-pane', '.entropy-pane', '.strings-pane', '.hex-pane', '.histogram'].map((selector) => {
+    const element = document.querySelector(selector);
+    if (!element) throw new Error(`Missing activation pane: ${selector}`);
+    const style = getComputedStyle(element);
+    return [style.animationName, Math.round(Number.parseFloat(style.animationDelay) * 1_000)];
+  }));
+  expect(fixtures).toEqual([
+    ['fixture-eager', 60], ['fixture-double', 225], ['fixture-stumble', 395],
+    ['fixture-double', 555], ['fixture-steady', 715],
+  ]);
   await expect(page.locator('.workspace')).not.toHaveClass(/igniting/);
+  expect(Date.now() - activationStartedAt).toBeGreaterThanOrEqual(1_350);
+  expect(Date.now() - activationStartedAt).toBeLessThan(2_500);
   await expect(page.getByText('No file loaded.', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Sample', exact: true }).click();
   await expect(page.getByText('Sample file')).toBeVisible();
@@ -32,15 +45,20 @@ test('keyboard launcher and motion cancellation', async ({ page }) => {
   await expect(module).toBeFocused();
 });
 
-test('boot log records mounted readiness states instead of simulated work', async ({ page }) => {
+test('boot restores the dense visual trace and reports live readiness separately', async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = window as Window & { __bootLinePeak?: number };
+    state.__bootLinePeak = 0;
+    new MutationObserver(() => {
+      state.__bootLinePeak = Math.max(state.__bootLinePeak ?? 0, document.querySelectorAll('.boot-log-line').length);
+    }).observe(document, { childList: true, subtree: true });
+  });
   await page.goto('/');
-  await expect(page.locator('.boot-log-line').first()).toContainText('Spectre renderer mounted');
-  await expect(page.locator('.boot-log-lines')).toContainText('Analysis worker: available on demand');
-  await expect(page.locator('.boot-log-lines')).toContainText('First render frame delivered');
-  await expect(page.locator('.boot-log-lines')).toContainText('SPECTRE surface ready');
-  const lines = page.locator('.boot-log-line');
-  await expect(lines).toHaveCount(8);
-  await expect(page.locator('.boot-log-lines')).not.toContainText('Allocating byte-frequency bins');
+  await expect(page.locator('.boot-sequence-label')).toHaveText('Visual startup trace · display only');
+  await expect(page.locator('.boot-live-status')).toContainText('renderer ready');
+  await expect(page.locator('.boot-live-status')).toContainText('file input ready');
+  await expect(page.locator('.boot-live-status')).toContainText('analysis worker available on demand');
+  await expect.poll(() => page.evaluate(() => (window as Window & { __bootLinePeak?: number }).__bootLinePeak ?? 0), { timeout: 6_000 }).toBe(70);
 });
 
 test('file intake remains usable while the workspace activation runs', async ({ page }) => {

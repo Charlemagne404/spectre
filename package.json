@@ -10,6 +10,7 @@
     "tauri": "tauri",
     "test:e2e": "playwright test",
     "record:demo": "node scripts/record-blackbox.mjs",
+    "record:animations": "node scripts/record-animation-restoration.mjs",
     "record:mission-3": "node scripts/record-development-mission-3.mjs",
     "benchmark:inspection": "SPECTRE_INSPECTION_PERF=1 vitest run tests/inspection-large-files.perf.test.ts --reporter=verbose"
   },
