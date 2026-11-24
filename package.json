@@ -1,0 +1,41 @@
+{
+  "name": "spectre",
+  "version": "0.1.0",
+  "description": "Local-first desktop file inspection",
+  "scripts": {
+    "test": "vitest run tests/analysis.test.ts tests/inspection.test.ts tests/stringScanner.test.ts",
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test:e2e": "playwright test",
+    "record:demo": "node scripts/record-blackbox.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Charlemagne404/spectre.git"
+  },
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/Charlemagne404/spectre/issues"
+  },
+  "homepage": "https://github.com/Charlemagne404/spectre#readme",
+  "dependencies": {
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "hash-wasm": "^4.13.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@tauri-apps/cli": "^2.12.6",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
+  },
+  "private": true
+}

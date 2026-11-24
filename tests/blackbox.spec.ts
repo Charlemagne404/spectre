@@ -1,0 +1,250 @@
+import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { createHash } from 'node:crypto';
+import { mkdtemp, open, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+async function openWorkspace(page: Page) {
+  await page.goto('/');
+  await page.getByRole('button', { name: '[1] BLACKBOX' }).click();
+  await expect(page.getByText('No file loaded.', { exact: true })).toBeVisible();
+}
+
+async function launch(page: Page) {
+  await openWorkspace(page);
+  await page.getByRole('button', { name: 'Sample', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'relay_07.wav' })).toBeVisible();
+}
+
+test('keyboard launcher and motion cancellation', async ({ page }) => {
+  await page.goto('/');
+  await page.keyboard.press('Escape');
+  const module = page.getByRole('button', { name: '[1] BLACKBOX' });
+  await expect(module).toBeFocused();
+  await page.keyboard.press('1');
+  await expect(page.locator('.workspace')).toHaveClass(/igniting/);
+  await expect(page.locator('.workspace')).not.toHaveClass(/igniting/);
+  await expect(page.getByText('No file loaded.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Sample', exact: true }).click();
+  await expect(page.getByText('Sample file')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(module).toBeFocused();
+});
+
+test('reveals small-file findings progressively after real analysis completes', async ({ page }) => {
+  await openWorkspace(page);
+  const payload = Buffer.from('small file, fully analyzed');
+  const started = Date.now();
+  await page.locator('input[type=file]').setInputFiles({ name: 'quick.txt', mimeType: 'text/plain', buffer: payload });
+  await expect(page.getByText('REVEALING FINDINGS', { exact: true })).toBeVisible();
+  await expect(page.getByRole('progressbar')).toHaveAttribute('value', String(payload.length));
+  await expect(page.getByText('ANALYSIS COMPLETE', { exact: true })).toBeVisible({ timeout: 5_000 });
+  const presentationTime = Date.now() - started;
+  expect(presentationTime).toBeGreaterThanOrEqual(1_800);
+  expect(presentationTime).toBeLessThan(3_000);
+});
+
+test.describe('inspection with reduced motion', () => {
+  test.use({ reducedMotion: 'reduce' });
+
+  test('keeps all panes intentional and empty until the sample is requested', async ({ page }) => {
+    await openWorkspace(page);
+    await expect(page.getByText('No file loaded.', { exact: true })).toBeVisible();
+    await expect(page.getByText('No measurements.', { exact: true })).toHaveCount(2);
+    await expect(page.getByText('No extracted strings.', { exact: true })).toBeVisible();
+    await expect(page.getByText('No file selected.', { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'relay_07.wav' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Sample', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'relay_07.wav' })).toBeVisible();
+    await expect(page.getByText('Sample file')).toBeVisible();
+  });
+
+  test('links structure, entropy, strings, and hex bytes', async ({ page }) => {
+    await launch(page);
+    await page.getByRole('button', { name: 'LIST', exact: true }).click();
+    await expect(page.locator('.hex-selection')).toContainText('0x00000024');
+    await expect(page.locator('.hex-bytes .selected-byte').first()).toHaveText('4C');
+    await expect(page.locator('.strings-footer')).toContainText('STRUCTURE REGION');
+    await expect(page.getByRole('button', { name: /RELAY 07 \/ reference capture/ })).toBeVisible();
+    const graph = page.getByRole('slider', { name: 'Entropy region' });
+    await graph.focus();
+    await page.keyboard.press('End');
+    await expect(page.locator('.hex-selection')).not.toContainText('0x00000024');
+    await expect(graph).toHaveAttribute('aria-valuenow', await graph.getAttribute('aria-valuemax') ?? '');
+    const box = await graph.boundingBox();
+    if (!box) throw new Error('Missing entropy plot');
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(page.locator('.plot-tooltip')).toHaveText(/0x[\dA-F]+ · \d\.\d{2} bits\/B/);
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    const selectedPoint = await graph.getAttribute('aria-valuetext') ?? '';
+    const selectedOffset = selectedPoint.match(/0x[\dA-F]+/)?.[0];
+    expect(selectedOffset).toBeTruthy();
+    await expect(page.locator('.hex-selection')).toContainText(selectedOffset ?? 'impossible');
+
+    await page.keyboard.press('Control+f');
+    const search = page.getByRole('searchbox', { name: 'Filter strings' });
+    await expect(search).toBeFocused();
+    await search.fill('reference capture');
+    await page.getByRole('button', { name: /RELAY 07 \/ reference capture/ }).click();
+    await expect(page.locator('.hex-ascii .selected-byte').first()).toHaveText('R');
+
+    const byteSearch = page.getByRole('textbox', { name: 'Search bytes (hexadecimal)' });
+    await byteSearch.fill('53 70 65 63 74 72 65');
+    await page.getByRole('button', { name: 'Find byte sequence' }).click();
+    await expect(page.locator('.hex-selection')).toContainText('7 bytes');
+    await expect(page.locator('.hex-selection')).toContainText('· 53');
+
+    const jump = page.getByRole('textbox', { name: 'Jump to hexadecimal offset' });
+    await jump.fill('FFFFFFFFFF');
+    await jump.press('Enter');
+    await expect(page.getByRole('alert')).toHaveText('Enter a valid file offset');
+    await jump.fill('1');
+    await jump.press('Enter');
+    await expect(page.locator('.hex-selection')).toContainText('0x00000001');
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.hex-selection')).toContainText('0x00000002');
+    await expect(page.locator('.histogram-head')).toContainText('0x46');
+    const frequency = page.getByRole('slider', { name: /Byte frequency/ });
+    await frequency.focus();
+    await frequency.press('End');
+    await expect(page.locator('.histogram-head')).toContainText('0xFF');
+    await page.getByRole('button', { name: 'Next hex page' }).click();
+    await expect(page.locator('.hex-selection')).toContainText('0x00000400');
+
+    const graphFrequency = page.getByRole('slider', { name: /Byte frequency/ });
+    const histogramBox = await graphFrequency.boundingBox();
+    if (!histogramBox) throw new Error('Missing byte histogram');
+    await page.mouse.click(histogramBox.x + histogramBox.width * 0.322, histogramBox.y + histogramBox.height / 2);
+    await expect(page.locator('.hex-selection')).toContainText('· 52');
+    await expect(page.locator('.histogram-head')).toContainText('0x52');
+    await expect(page.getByRole('button', { name: 'JSON' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'HTML' })).toBeVisible();
+  });
+
+  test('replaces the sample using the system-picker entry point', async ({ page }) => {
+    await launch(page);
+    const payload = Buffer.from('hello Spectre\nhello file\n');
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: 'Open file', exact: true }).click();
+    await (await chooser).setFiles({ name: 'real.txt', mimeType: 'text/plain', buffer: payload });
+    await expect(page.getByRole('heading', { name: 'real.txt' })).toBeVisible();
+    await expect(page.getByText('Sample file')).toHaveCount(0);
+    await expect(page.getByText(createHash('sha256').update(payload).digest('hex'))).toBeVisible();
+    await expect(page.getByRole('button', { name: /hello Spectre/ })).toBeVisible();
+  });
+
+  test('exports JSON and HTML reports from completed analysis facts', async ({ page }) => {
+    await launch(page);
+    const payload = Buffer.from('actual report payload\nwith a printable string');
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: 'Open file', exact: true }).click();
+    await (await chooser).setFiles({ name: 'report.txt', mimeType: 'text/plain', buffer: payload });
+    await page.getByRole('button', { name: 'JSON' }).waitFor();
+
+    const jsonWait = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'JSON' }).click();
+    const jsonDownload = await jsonWait;
+    expect(jsonDownload.suggestedFilename()).toBe('spectre-report-analysis.json');
+    const jsonPath = await jsonDownload.path();
+    if (!jsonPath) throw new Error('The JSON report was not saved.');
+    const report = JSON.parse(await readFile(jsonPath, 'utf8')) as { detectedFacts: { sha256: string; fileName: string; byteFrequency: { total: number } } };
+    expect(report.detectedFacts.fileName).toBe('report.txt');
+    expect(report.detectedFacts.sha256).toBe(createHash('sha256').update(payload).digest('hex'));
+    expect(report.detectedFacts.byteFrequency.total).toBe(payload.length);
+
+    const htmlWait = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'HTML' }).click();
+    const htmlDownload = await htmlWait;
+    const htmlPath = await htmlDownload.path();
+    if (!htmlPath) throw new Error('The HTML report was not saved.');
+    const html = await readFile(htmlPath, 'utf8');
+    expect(html).toContain('<!doctype html>');
+    expect(html).toContain('actual report payload');
+    expect(html).toContain(report.detectedFacts.sha256);
+  });
+
+  test('accepts dropped files from the launcher, including empty files', async ({ page }) => {
+    await page.goto('/');
+    const transfer = await page.evaluateHandle(() => {
+      const data = new DataTransfer();
+      data.items.add(new File([], 'zero.bin'));
+      return data;
+    });
+    await page.locator('.application').dispatchEvent('drop', { dataTransfer: transfer });
+    await expect(page.getByRole('heading', { name: 'zero.bin' })).toBeVisible();
+    await expect(page.getByText('This file contains no bytes.')).toBeVisible();
+    await expect(page.getByRole('slider', { name: 'Entropy region' })).toHaveCount(0);
+  });
+
+  test('cancels active work and safely replaces the file immediately', async ({ page }) => {
+    await launch(page);
+    const directory = await mkdtemp(join(tmpdir(), 'spectre-cancel-'));
+    const large = join(directory, 'cancel.bin');
+    try {
+      const handle = await open(large, 'w');
+      try { await handle.truncate(96 * 1024 * 1024); } finally { await handle.close(); }
+      await page.locator('input[type=file]').setInputFiles(large);
+      await expect(page.getByRole('progressbar')).toBeVisible();
+      await page.getByRole('button', { name: 'Cancel analysis' }).click();
+      await expect(page.locator('.analysis-status')).toHaveClass(/analysis-cancelled/);
+      const cancelledAt = await page.getByRole('progressbar').getAttribute('value');
+      await page.waitForTimeout(120);
+      await expect(page.getByRole('progressbar')).toHaveAttribute('value', cancelledAt ?? '');
+      const payload = Buffer.from('replacement remains responsive');
+      await page.locator('input[type=file]').setInputFiles({ name: 'replacement.txt', mimeType: 'text/plain', buffer: payload });
+      await expect(page.getByRole('heading', { name: 'replacement.txt' })).toBeVisible();
+      await expect(page.getByText(createHash('sha256').update(payload).digest('hex'))).toBeVisible();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the workspace interactive while hashing a 128 MiB file', async ({ page }) => {
+    await launch(page);
+    const directory = await mkdtemp(join(tmpdir(), 'spectre-test-'));
+    const path = join(directory, 'large.bin');
+    try {
+      const file = await open(path, 'w');
+      try {
+        await file.truncate(128 * 1024 * 1024);
+      } finally {
+        await file.close();
+      }
+      await page.locator('input[type=file]').setInputFiles(path);
+      await expect(page.getByRole('progressbar')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'large.bin' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Cancel analysis' })).toBeEnabled();
+      await expect(page.getByRole('searchbox')).toBeDisabled();
+      await expect(page.getByRole('heading', { name: 'large.bin' })).toBeVisible({ timeout: 15_000 });
+      const hash = createHash('sha256');
+      const chunk = Buffer.alloc(1024 * 1024);
+      for (let index = 0; index < 128; index++) hash.update(chunk);
+      await expect(page.getByText(hash.digest('hex'), { exact: true })).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByRole('searchbox')).toBeEnabled({ timeout: 60_000 });
+      await page.keyboard.press('Control+f');
+      await expect(page.getByRole('searchbox')).toBeFocused();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  for (const [width, height] of [[1280, 800], [1440, 900], [1920, 1080]]) {
+    test('keeps all panes in view at ' + width + ' × ' + height, async ({ page }) => {
+      await page.setViewportSize({ width, height });
+      await launch(page);
+      for (const selector of ['.file-pane', '.entropy-pane', '.strings-pane', '.hex-pane', '.histogram']) {
+        const rect = await page.locator(selector).boundingBox();
+        expect(rect).not.toBeNull();
+        if (!rect) throw new Error(selector + ' is missing');
+        expect(rect.x).toBeGreaterThanOrEqual(0);
+        expect(rect.y).toBeGreaterThanOrEqual(0);
+        expect(rect.x + rect.width).toBeLessThanOrEqual(width);
+        expect(rect.y + rect.height).toBeLessThanOrEqual(height);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+      expect(await page.locator('.hex-scroll').evaluate((node) => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+    });
+  }
+});

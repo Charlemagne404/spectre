@@ -1,0 +1,20 @@
+node_modules/
+dist/
+*.tsbuildinfo
+src-tauri/target/
+src-tauri/gen/
+playwright-report/
+test-results/
+.DS_Store
+
+# Local test output, recordings, and generated performance fixtures
+/.playwright-cli/
+/.vitest/
+/output/
+/spectre-startup.webm
+
+# Local credentials and machine-specific npm settings
+.env
+.env.*
+!.env.example
+.npmrc
