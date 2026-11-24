@@ -105,6 +105,7 @@ export function App() {
   const launch = useCallback(() => setScreen(reduced ? 'workspace' : 'opening-cut'), [reduced]);
 
   const open = useCallback(() => input.current?.click(), []);
+  const restoreFile = useCallback((_file: import('./blackbox/investigations').InvestigationFile) => input.current?.click(), []);
   const back = useCallback(() => setScreen(reduced ? 'launcher' : 'closing-cut'), [reduced]);
   const importFile = (file: File) => {
     load(file);
@@ -201,7 +202,7 @@ export function App() {
     {showWorkspace && <Workspace inspection={inspection} pending={pending} error={error}
       run={run} processingRun={processingRun} reanalyze={reanalyze} openSample={openSample}
       activating={screen === 'workspace-start'} shuttingDown={screen === 'closing-cut'}
-      open={open} back={back} cancel={cancel} titleRef={title} searchRef={search} />}
+      open={open} back={back} cancel={cancel} restoreFile={restoreFile} titleRef={title} searchRef={search} />}
     {dragging && <div className="drop-overlay" aria-hidden="true"><div><span>FILE INCOMING</span><strong>{draggedName || 'Drop to begin analysis'}</strong></div></div>}
     {intakeAck && <div key={intakeAck.id} className="intake-ack" role="status"><span>RECEIVED</span><strong>{intakeAck.name}</strong></div>}
   </div>;

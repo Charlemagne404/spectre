@@ -54,6 +54,126 @@ test('file intake remains usable while the workspace activation runs', async ({ 
   await expect(page.getByText('ANALYSIS COMPLETE', { exact: true })).toBeVisible({ timeout: 5_000 });
 });
 
+test('creates a local investigation, bookmarks a structure, and reopens it after reload', async ({ page }) => {
+  await launch(page);
+  const sourceDigest = await page.locator('.digest code').innerText();
+  await page.getByRole('button', { name: 'Investigation' }).click();
+  await page.getByRole('textbox', { name: 'New investigation name' }).fill('Acquisition A');
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Acquisition A' })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Investigation workspace' }).getByText('relay_07.wav', { exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: 'Investigation name', exact: true }).fill('Acquisition A / intake');
+  await page.getByRole('button', { name: 'Rename', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Acquisition A / intake' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close investigation panel' }).click();
+
+  await page.getByRole('button', { name: 'LIST', exact: true }).click();
+  await page.getByRole('button', { name: 'Bookmark', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Bookmark label' }).fill('LIST metadata block');
+  await page.getByRole('textbox', { name: 'Bookmark note' }).fill('Review the embedded reference marker.');
+  await page.getByRole('button', { name: 'Save bookmark' }).click();
+  await page.locator('.investigation-file > summary').click();
+  await page.locator('.investigation-bookmark > summary').filter({ hasText: 'LIST metadata block' }).click();
+  await expect(page.getByText('LIST metadata block', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Navigate to bytes' }).click();
+  await expect(page.locator('.hex-selection')).toContainText('0x00000024');
+
+  await page.reload();
+  await openWorkspace(page);
+  await page.getByRole('button', { name: 'Investigation' }).click();
+  await page.getByRole('combobox', { name: 'Open investigation' }).selectOption({ label: 'Acquisition A / intake · 1 file' });
+  await page.locator('.investigation-file > summary').click();
+  await page.locator('.investigation-bookmark > summary').filter({ hasText: 'LIST metadata block' }).click();
+  await expect(page.locator('.investigation-file')).toContainText('SOURCE NEEDED');
+  await expect(page.getByRole('button', { name: 'Choose matching source first' })).toBeDisabled();
+  await page.getByRole('button', { name: 'Close investigation panel' }).click();
+
+  await page.locator('input[aria-label="Choose a local file"]').setInputFiles({
+    name: 'relay_07.wav', mimeType: 'audio/wav', buffer: Buffer.from('different file with the same filename'),
+  });
+  await expect(page.getByText('ANALYSIS COMPLETE', { exact: true })).toBeVisible({ timeout: 5_000 });
+  await page.locator('.investigation-toggle').click();
+  const originalRecord = page.locator('.investigation-file').filter({ hasText: 'SOURCE NEEDED' }).first();
+  await originalRecord.locator('> summary').click();
+  await originalRecord.locator('.investigation-bookmark > summary').filter({ hasText: 'LIST metadata block' }).click();
+  await expect(originalRecord.getByRole('button', { name: 'Choose matching source first' })).toBeDisabled();
+
+  await page.getByRole('button', { name: 'Sample', exact: true }).click();
+  await expect(page.locator('.digest code')).toHaveText(sourceDigest, { timeout: 10_000 });
+  const matchedRecord = page.locator('.investigation-file').filter({ hasText: 'IN SESSION' }).first();
+  if (!(await matchedRecord.evaluate((element) => (element as HTMLDetailsElement).open))) await matchedRecord.locator('> summary').click();
+  const matchedBookmark = matchedRecord.locator('.investigation-bookmark').filter({ hasText: 'LIST metadata block' }).first();
+  if (!(await matchedBookmark.evaluate((element) => (element as HTMLDetailsElement).open))) await matchedBookmark.locator('> summary').click();
+  await expect(page.getByText('LIST metadata block', { exact: true })).toBeVisible();
+  await matchedRecord.getByRole('button', { name: 'Navigate to bytes' }).click();
+  await expect(page.locator('.hex-selection')).toContainText('0x00000024');
+});
+
+test('deletes a local investigation without affecting the current file', async ({ page }) => {
+  await launch(page);
+  await page.getByRole('button', { name: 'Investigation' }).click();
+  await page.getByRole('textbox', { name: 'New investigation name' }).fill('Temporary record');
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Investigation', exact: true })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Open investigation' })).not.toContainText('Temporary record');
+  await expect(page.getByRole('heading', { name: 'relay_07.wav' })).toBeVisible();
+});
+
+test('compares files by actual offset-aligned bytes with navigable differences', async ({ page }) => {
+  await openWorkspace(page);
+  const firstBytes = Buffer.from([1, 2, 3, 4]);
+  await page.locator('input[aria-label="Choose a local file"]').setInputFiles({ name: 'first.bin', mimeType: 'application/octet-stream', buffer: firstBytes });
+  await expect(page.getByText('ANALYSIS COMPLETE', { exact: true })).toBeVisible({ timeout: 5_000 });
+  await page.getByRole('button', { name: 'Investigation' }).click();
+  await page.getByRole('textbox', { name: 'New investigation name' }).fill('Compare case');
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(page.getByText('IN SESSION', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Close investigation panel' }).click();
+  await page.getByRole('button', { name: 'Compare', exact: true }).click();
+  await page.locator('input[aria-label="Select comparison file"]').setInputFiles({ name: 'second.bin', mimeType: 'application/octet-stream', buffer: Buffer.from([1, 9, 3, 4, 5]) });
+  await expect(page.getByText('2 differing byte offsets found.', { exact: true })).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText('OFFSET-ALIGNED', { exact: true })).toBeVisible();
+  await expect(page.getByText(/Insertions and deletions shift later offsets/)).toBeVisible();
+  await expect(page.locator('.comparison-difference-rows button')).toHaveCount(2);
+  await page.getByRole('button', { name: 'Next difference' }).click();
+  await expect(page.getByText('2 / 2 retained ranges')).toBeVisible();
+  await page.getByRole('button', { name: 'Bookmark difference on A' }).click();
+  await page.getByRole('textbox', { name: 'Bookmark label' }).fill('Appended byte');
+  await page.getByRole('button', { name: 'Save bookmark' }).click();
+  await expect(page.locator('.investigation-comparisons')).toContainText('1');
+  await page.getByRole('button', { name: 'Close investigation panel' }).click();
+  const reportWait = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'JSON' }).click();
+  const reportDownload = await reportWait;
+  const reportPath = await reportDownload.path();
+  if (!reportPath) throw new Error('Investigation report was not saved.');
+  const report = JSON.parse(await readFile(reportPath, 'utf8')) as { investigation: { comparisons: unknown[]; bookmarks: Array<{ label: string; kind: string }> } };
+  expect(report.investigation.comparisons).toHaveLength(1);
+  expect(report.investigation.bookmarks).toContainEqual(expect.objectContaining({ label: 'Appended byte', kind: 'difference' }));
+  await expect(page.getByRole('heading', { name: 'first.bin' })).toBeVisible();
+});
+
+test('scans for an embedded PNG, validates its chunk bounds, and links its bytes', async ({ page }) => {
+  await openWorkspace(page);
+  const png = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, ...new Array(13).fill(0), 0, 0, 0, 0,
+    0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0, 0, 0, 0,
+  ]);
+  const fixture = Buffer.concat([Buffer.from('container prefix'), png]);
+  await page.locator('input[aria-label="Choose a local file"]').setInputFiles({ name: 'container.bin', mimeType: 'application/octet-stream', buffer: fixture });
+  await expect(page.getByText('ANALYSIS COMPLETE', { exact: true })).toBeVisible({ timeout: 5_000 });
+  await page.locator('.embedded-signatures > summary').click();
+  await page.getByRole('button', { name: 'Scan file', exact: true }).click();
+  const finding = page.locator('.embedded-signature-list button');
+  await expect(finding).toContainText('PNG');
+  await expect(finding).toContainText('COMPLETE');
+  await finding.click();
+  await expect(page.locator('.hex-selection')).toContainText('0x00000010');
+  await expect(page.locator('.hex-selection')).toContainText(`${png.length} bytes`);
+});
+
 test('reveals small-file findings progressively after real analysis completes', async ({ page }) => {
   await openWorkspace(page);
   const payload = Buffer.from('small file, fully analyzed');
@@ -86,14 +206,43 @@ test.describe('inspection with reduced motion', () => {
 
   test('interprets bytes as unsigned integers with explicit byte order', async ({ page }) => {
     await launch(page);
-    const value = page.getByLabel('Interpreted unsigned integer');
-    await expect(value).toHaveText('0x46464952');
+    const value = page.getByLabel('Interpreted binary data');
+    const hex = page.getByRole('combobox', { name: 'Data interpretation' });
+    const bytes = page.getByRole('region', { name: /Hex bytes/ });
+    await bytes.focus();
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('Shift+ArrowRight');
+    await hex.selectOption('U32');
+    await expect(value).toHaveText('1179011410');
     await page.getByRole('button', { name: 'Switch to big-endian' }).click();
-    await expect(value).toHaveText('0x52494646');
-    await page.getByRole('combobox', { name: 'Unsigned integer width' }).selectOption('8');
-    await expect(value).toHaveText('0x52494646007B0100');
-    await page.getByRole('combobox', { name: 'Unsigned integer width' }).selectOption('1');
+    await expect(value).toHaveText('1380533830');
+    await bytes.focus();
+    for (let index = 0; index < 4; index++) await page.keyboard.press('Shift+ArrowRight');
+    await hex.selectOption('U64');
+    await expect(value).toHaveText('5929347650879684864');
+    await hex.selectOption('U8');
     await expect(page.getByRole('button', { name: 'Switch to little-endian' })).toBeDisabled();
+  });
+
+  test('extends byte ranges and traverses navigation history', async ({ page }) => {
+    await launch(page);
+    const bytes = page.getByRole('region', { name: /Hex bytes/ });
+    await bytes.focus();
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('Shift+ArrowRight');
+    await expect(page.locator('.hex-selection')).toContainText('0x00000000');
+    await expect(page.locator('.hex-selection')).toContainText('3 bytes');
+    await page.getByRole('button', { name: 'Previous byte selection' }).click();
+    await expect(page.locator('.hex-selection')).toContainText('2 bytes');
+    await page.getByRole('button', { name: 'Next byte selection' }).click();
+    await expect(page.locator('.hex-selection')).toContainText('3 bytes');
+    await bytes.focus();
+    await page.keyboard.press('Control+End');
+    const endOffset = (await page.locator('.hex-selection').innerText()).match(/0x[\dA-F]+/)?.[0];
+    expect(endOffset).toBeTruthy();
+    await page.keyboard.press('Control+Home');
+    await expect(page.locator('.hex-selection')).toContainText('0x00000000');
   });
 
   test('links structure, entropy, strings, and hex bytes', async ({ page }) => {
@@ -127,7 +276,7 @@ test.describe('inspection with reduced motion', () => {
 
     const byteSearch = page.getByRole('textbox', { name: 'Search bytes (hexadecimal)' });
     await byteSearch.fill('53 70 65 63 74 72 65');
-    await page.getByRole('button', { name: 'Find byte sequence' }).click();
+    await page.getByRole('button', { name: 'Find next byte sequence' }).click();
     await expect(page.locator('.hex-selection')).toContainText('7 bytes');
     await expect(page.locator('.hex-selection')).toContainText('· 53');
 

@@ -45,6 +45,24 @@ function starts(bytes: Uint8Array, signature: number[]) {
   return signature.every((byte, index) => bytes[index] === byte);
 }
 
+interface MachOMagic { fat: boolean; fat64: boolean; littleEndian: boolean; is64: boolean }
+
+function machOMagic(bytes: Uint8Array): MachOMagic | null {
+  if (bytes.length < 4) return null;
+  const signature = Array.from(bytes.subarray(0, 4), (value) => value.toString(16).padStart(2, '0')).join('').toUpperCase();
+  const known: Record<string, MachOMagic> = {
+    FEEDFACE: { fat: false, fat64: false, littleEndian: false, is64: false },
+    CEFAEDFE: { fat: false, fat64: false, littleEndian: true, is64: false },
+    FEEDFACF: { fat: false, fat64: false, littleEndian: false, is64: true },
+    CFFAEDFE: { fat: false, fat64: false, littleEndian: true, is64: true },
+    CAFEBABE: { fat: true, fat64: false, littleEndian: false, is64: false },
+    BEBAFECA: { fat: true, fat64: false, littleEndian: true, is64: false },
+    CAFEBABF: { fat: true, fat64: true, littleEndian: false, is64: false },
+    BFBAFECA: { fat: true, fat64: true, littleEndian: true, is64: false },
+  };
+  return known[signature] ?? null;
+}
+
 function extensionOf(name: string) {
   const leaf = name.split(/[\\/]/).at(-1) ?? name;
   const dot = leaf.lastIndexOf('.');
@@ -53,6 +71,7 @@ function extensionOf(name: string) {
 
 function detectType(bytes: Uint8Array) {
   if (!bytes.length) return 'Empty file';
+  if (machOMagic(bytes)) return 'Mach-O binary';
   if (ascii(bytes, 0, 4) === 'RIFF' && ascii(bytes, 8, 4) === 'WAVE') return 'RIFF / WAVE';
   if (ascii(bytes, 0, 4) === 'RIFF' && ascii(bytes, 8, 4) === 'WEBP') return 'WebP image';
   if (starts(bytes, [137, 80, 78, 71, 13, 10, 26, 10])) return 'PNG image';
@@ -101,6 +120,7 @@ const extensionTypes: Record<string, string[]> = {
   '7-Zip archive': ['.7z'],
   'RAR archive': ['.rar'],
   'MZ executable': ['.exe', '.dll', '.sys', '.scr', '.com'],
+  'Mach-O binary': ['.macho', '.dylib', '.bundle', '.app', '.mach'],
   'Text / UTF-8': ['.txt', '.text', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml', '.html', '.htm', '.log', '.yaml', '.yml', '.toml', '.ini', '.css', '.js', '.ts', '.rs', '.py', '.sh'],
 };
 
@@ -120,6 +140,7 @@ function identify(file: File, prefix: Uint8Array): FileIdentity {
       'BMP image': 'image/bmp', 'FLAC audio': 'audio/flac', 'MIDI file': 'audio/midi',
       'AIFF audio': 'audio/aiff', 'ISO base media': 'video/mp4', '7-Zip archive': 'application/x-7z-compressed',
       'RAR archive': 'application/vnd.rar', 'MZ executable': 'application/vnd.microsoft.portable-executable',
+      'Mach-O binary': 'application/x-mach-binary',
       'Text / UTF-8': 'text/plain', 'Empty file': 'application/x-empty', 'Binary data': 'application/octet-stream',
     } as Record<string, string>)[type] ?? 'application/octet-stream',
     extension,
@@ -127,6 +148,12 @@ function identify(file: File, prefix: Uint8Array): FileIdentity {
     sourceMime: file.type,
     lastModified: file.lastModified,
   };
+}
+
+/** Read only the bounded signature prefix needed for format identification. */
+export async function identifyFile(file: File): Promise<FileIdentity> {
+  const prefix = new Uint8Array(await file.slice(0, Math.min(file.size, 64 * 1024)).arrayBuffer());
+  return identify(file, prefix);
 }
 
 function checkCancelled(signal?: AbortSignal) {
@@ -1704,6 +1731,245 @@ async function parsePdf(file: File, signal?: AbortSignal) {
   };
 }
 
+const MACHO_COMMAND_LIMIT = 16 * 1024 * 1024;
+const MACHO_COMMAND_COUNT_LIMIT = 4_096;
+const MACHO_FAT_ARCH_LIMIT = 64;
+
+function machoArchitecture(cpu: number) {
+  const is64 = (cpu & 0x01000000) !== 0;
+  const base = cpu & 0x00ffffff;
+  const name = ({ 7: 'x86', 12: 'ARM', 18: 'PowerPC' } as Record<number, string>)[base]
+    ?? (base === 0 ? 'Any CPU' : `CPU ${cpu}`);
+  return is64 && base === 7 ? 'x86-64' : is64 && base === 12 ? 'ARM64' : name;
+}
+
+function machoFileType(value: number) {
+  const names: Record<number, string> = {
+    1: 'Object', 2: 'Executable', 3: 'Fixed VM shared library', 4: 'Core', 5: 'Preloaded executable',
+    6: 'Dynamic library', 7: 'Dynamic linker', 8: 'Bundle', 9: 'Shared library stub', 10: 'DSYM', 11: 'Kext bundle',
+  };
+  return names[value] ?? `File type ${value}`;
+}
+
+function machoVersion(value: number) {
+  return `${value >>> 16}.${(value >>> 8) & 0xff}.${value & 0xff}`;
+}
+
+function machoString(bytes: Uint8Array, offset: number) {
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset >= bytes.length) return '';
+  const end = bytes.indexOf(0, offset);
+  return ascii(bytes, offset, (end < 0 ? bytes.length : end) - offset).trim();
+}
+
+function incompleteMachO(file: File, offset: number, size: number, label: string, warning: string): ParserOutput {
+  const regions = offset < file.size && size > 0 ? [region(label, offset, Math.min(size, file.size - offset), 'header')] : [];
+  return { regions: finishRegionMap(regions, file.size, 'Unparsed Mach-O bytes'), structure: {
+    parser: 'Mach-O headers and load commands', mode: 'format-aware', complete: false,
+    limitation: 'The Mach-O signature is recognized, but its declared structures could not be fully decoded.', warnings: [warning], findings: [],
+  } };
+}
+
+async function parseMachOThin(file: File, sliceOffset: number, sliceSize: number, label: string, signal?: AbortSignal): Promise<ParserOutput | null> {
+  const magic = machOMagic(await readAt(file, sliceOffset, 4, signal));
+  if (!magic || magic.fat) return null;
+  const is64 = magic.is64;
+  const littleEndian = magic.littleEndian;
+  const headerSize = is64 ? 32 : 28;
+  const header = await readAt(file, sliceOffset, headerSize, signal);
+  const warnings: string[] = [];
+  const findings: ParserFinding[] = [];
+  const regions: Region[] = [];
+  if (header.length < headerSize) return incompleteMachO(file, sliceOffset, Math.max(0, sliceSize), `Mach-O header · ${label}`, 'The Mach-O header is truncated.');
+  const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+  const u32 = (at: number) => view.getUint32(at, littleEndian);
+  const machine = view.getInt32(4, littleEndian);
+  const subtype = view.getInt32(8, littleEndian);
+  const fileType = u32(12);
+  const declaredCommands = u32(16);
+  const declaredCommandBytes = u32(20);
+  const flags = u32(24);
+  const architecture = machoArchitecture(machine);
+  regions.push(region(`Mach-O header · ${label}`, sliceOffset, headerSize, 'header'));
+  findings.push(
+    parserFinding(`Architecture · ${label}`, architecture),
+    parserFinding(`CPU subtype · ${label}`, subtype),
+    parserFinding(`File type · ${label}`, machoFileType(fileType)),
+    parserFinding(`Load commands · ${label}`, declaredCommands),
+    parserFinding(`Mach-O flags · ${label}`, `0x${flags.toString(16).toUpperCase()}`),
+  );
+  if (is64 && u32(28) !== 0) warnings.push(`${label}: the reserved 64-bit header field is nonzero.`);
+  if (declaredCommands > MACHO_COMMAND_COUNT_LIMIT) warnings.push(`${label}: load-command listing was capped at ${MACHO_COMMAND_COUNT_LIMIT.toLocaleString('en')} commands.`);
+  if (declaredCommandBytes > MACHO_COMMAND_LIMIT) warnings.push(`${label}: load-command bytes were capped at ${MACHO_COMMAND_LIMIT.toLocaleString('en')} bytes.`);
+  if (headerSize > sliceSize) warnings.push(`${label}: the header extends beyond its containing slice.`);
+  const availableCommandBytes = Math.max(0, Math.min(declaredCommandBytes, MACHO_COMMAND_LIMIT, sliceSize - headerSize));
+  if (availableCommandBytes !== declaredCommandBytes) warnings.push(`${label}: the declared load-command area is truncated or exceeds the parser limit.`);
+  const commandStart = sliceOffset + headerSize;
+  const commands = availableCommandBytes ? await readAt(file, commandStart, availableCommandBytes, signal) : new Uint8Array(0);
+  if (commands.length) regions.push(region(`Load-command table · ${label}`, commandStart, commands.length, 'metadata'));
+  const commandView = new DataView(commands.buffer, commands.byteOffset, commands.byteLength);
+  const commandCount = Math.min(declaredCommands, MACHO_COMMAND_COUNT_LIMIT);
+  const dylibCommands: Record<number, string> = {
+    0x0c: 'Linked library', 0x0d: 'Install name', 0x18: 'Weak library',
+    0x1f: 'Re-exported library', 0x20: 'Lazy library', 0x23: 'Upward library',
+  };
+  let cursor = 0;
+  let parsedCommands = 0;
+  for (; parsedCommands < commandCount; parsedCommands++) {
+    if (cursor + 8 > commands.length) { warnings.push(`${label}: load-command ${parsedCommands} is truncated.`); break; }
+    const command = commandView.getUint32(cursor, littleEndian);
+    const commandSize = commandView.getUint32(cursor + 4, littleEndian);
+    if (commandSize < 8 || commandSize > commands.length - cursor) {
+      warnings.push(`${label}: load-command ${parsedCommands} has an invalid size.`);
+      break;
+    }
+    const item = commands.subarray(cursor, cursor + commandSize);
+    const itemView = new DataView(item.buffer, item.byteOffset, item.byteLength);
+    const baseCommand = command & 0x7fffffff;
+    const absoluteOffset = commandStart + cursor;
+    findings.push(parserFinding(`Load command · ${label}`, `0x${command.toString(16).toUpperCase()} · ${commandSize} bytes`, absoluteOffset, commandSize, 'metadata'));
+
+    if (baseCommand === 0x1 || baseCommand === 0x19) {
+      const segment64 = baseCommand === 0x19;
+      const minimumSize = segment64 ? 72 : 56;
+      if (commandSize < minimumSize || segment64 !== is64) {
+        warnings.push(`${label}: a segment command has an incompatible architecture or truncated header.`);
+      } else {
+        const segmentName = machoString(item, 8) || 'Unnamed segment';
+        const vmAddress = segment64 ? safeNumber(itemView.getBigUint64(24, littleEndian)) : itemView.getUint32(24, littleEndian);
+        const vmSize = segment64 ? safeNumber(itemView.getBigUint64(32, littleEndian)) : itemView.getUint32(28, littleEndian);
+        const fileOffset = segment64 ? safeNumber(itemView.getBigUint64(40, littleEndian)) : itemView.getUint32(32, littleEndian);
+        const fileSize = segment64 ? safeNumber(itemView.getBigUint64(48, littleEndian)) : itemView.getUint32(36, littleEndian);
+        const sectionCount = itemView.getUint32(segment64 ? 64 : 48, littleEndian);
+        findings.push(parserFinding(`Segment · ${label} · ${segmentName}`,
+          `VM ${Number.isSafeInteger(vmAddress) ? `0x${vmAddress.toString(16).toUpperCase()}` : 'outside safe range'} · ${Number.isSafeInteger(vmSize) ? vmSize.toLocaleString('en') : 'unknown'} bytes · ${sectionCount} sections`,
+          Number.isSafeInteger(fileOffset) && fileOffset <= sliceSize && Number.isSafeInteger(fileSize) && fileSize <= sliceSize - fileOffset
+            ? sliceOffset + fileOffset : undefined,
+          Number.isSafeInteger(fileSize) && fileSize <= sliceSize ? fileSize : undefined, 'segment'));
+        if (!Number.isSafeInteger(fileOffset) || !Number.isSafeInteger(fileSize) || fileOffset < 0 || fileSize < 0
+          || fileOffset > sliceSize || fileSize > sliceSize - Math.min(fileOffset, sliceSize)) {
+          warnings.push(`${label}: segment ${segmentName} has a file range outside the containing slice.`);
+        } else if (fileSize) regions.push(region(`Segment · ${segmentName} · ${label}`, sliceOffset + fileOffset, fileSize, 'data'));
+        const sectionSize = segment64 ? 80 : 68;
+        const firstSection = segment64 ? 72 : 56;
+        const visibleSections = Math.min(sectionCount, 256);
+        if (sectionCount > 256) warnings.push(`${label}: section listing for ${segmentName} was capped at 256.`);
+        if (firstSection + visibleSections * sectionSize > commandSize) {
+          warnings.push(`${label}: section table for ${segmentName} is truncated.`);
+        }
+        for (let sectionIndex = 0; sectionIndex < visibleSections && firstSection + (sectionIndex + 1) * sectionSize <= commandSize; sectionIndex++) {
+          const sectionAt = firstSection + sectionIndex * sectionSize;
+          const sectionName = machoString(item, sectionAt) || `Section ${sectionIndex + 1}`;
+          const sectionVM = segment64 ? safeNumber(itemView.getBigUint64(sectionAt + 32, littleEndian)) : itemView.getUint32(sectionAt + 32, littleEndian);
+          const sectionVMSize = segment64 ? safeNumber(itemView.getBigUint64(sectionAt + 40, littleEndian)) : itemView.getUint32(sectionAt + 36, littleEndian);
+          const sectionFileOffset = itemView.getUint32(sectionAt + (segment64 ? 48 : 40), littleEndian);
+          const validSection = Number.isSafeInteger(sectionVMSize) && sectionVMSize >= 0 && sectionFileOffset <= sliceSize
+            && sectionVMSize <= sliceSize - Math.min(sectionFileOffset, sliceSize);
+          const sectionAbsolute = validSection ? sliceOffset + sectionFileOffset : undefined;
+          findings.push(parserFinding(`Section · ${label} · ${sectionName}`,
+            `VM ${Number.isSafeInteger(sectionVM) ? `0x${sectionVM.toString(16).toUpperCase()}` : 'outside safe range'} · ${Number.isSafeInteger(sectionVMSize) ? sectionVMSize.toLocaleString('en') : 'unknown'} bytes`,
+            sectionAbsolute, validSection ? sectionVMSize : undefined, 'section'));
+          if (!validSection) warnings.push(`${label}: section ${sectionName} has a file range outside the containing slice.`);
+        }
+      }
+    } else if (dylibCommands[baseCommand]) {
+      const nameOffset = commandSize >= 12 ? itemView.getUint32(8, littleEndian) : commandSize;
+      const name = nameOffset >= 12 ? machoString(item, nameOffset) : '';
+      if (name) findings.push(parserFinding(`${dylibCommands[baseCommand]} · ${label}`, name, absoluteOffset, commandSize, 'entry'));
+      else warnings.push(`${label}: a dynamic-library command has an invalid or empty name.`);
+    } else if (baseCommand === 0x1d) {
+      if (commandSize < 16) warnings.push(`${label}: the code-signature command is truncated.`);
+      else {
+        const dataOffset = itemView.getUint32(8, littleEndian);
+        const dataSize = itemView.getUint32(12, littleEndian);
+        const valid = dataOffset <= sliceSize && dataSize <= sliceSize - dataOffset;
+        findings.push(parserFinding(`Code-signing metadata · ${label}`, valid
+          ? `Signature blob present · ${dataSize.toLocaleString('en')} bytes · not cryptographically verified`
+          : 'Signature command has an out-of-range blob location', valid ? sliceOffset + dataOffset : absoluteOffset,
+        valid ? dataSize : commandSize, 'metadata'));
+        if (!valid) warnings.push(`${label}: the code-signature blob extends beyond its slice.`);
+      }
+    } else if (baseCommand === 0x28) {
+      if (commandSize < 24) warnings.push(`${label}: the LC_MAIN entry-point command is truncated.`);
+      else findings.push(parserFinding(`Entry point · ${label}`,
+        `LC_MAIN offset 0x${itemView.getBigUint64(8, littleEndian).toString(16).toUpperCase()} · relative to __TEXT; not resolved to a file byte`));
+    } else if (baseCommand === 0x1b) {
+      if (commandSize < 24) warnings.push(`${label}: the UUID command is truncated.`);
+      else findings.push(parserFinding(`UUID · ${label}`, Array.from(item.subarray(8, 24), (value) => value.toString(16).padStart(2, '0')).join('').toUpperCase()));
+    } else if (baseCommand === 0x32) {
+      if (commandSize < 24) warnings.push(`${label}: the build-version command is truncated.`);
+      else {
+        const platform = itemView.getUint32(8, littleEndian);
+        const platformName = ({ 1: 'macOS', 2: 'iOS', 3: 'tvOS', 4: 'watchOS', 6: 'Mac Catalyst', 7: 'iOS Simulator', 8: 'tvOS Simulator', 9: 'watchOS Simulator' } as Record<number, string>)[platform] ?? `platform ${platform}`;
+        findings.push(parserFinding(`Build target · ${label}`, `${platformName} ${machoVersion(itemView.getUint32(12, littleEndian))} · SDK ${machoVersion(itemView.getUint32(16, littleEndian))}`));
+      }
+    }
+    cursor += commandSize;
+  }
+  if (parsedCommands < declaredCommands && !warnings.some((warning) => warning.includes('load-command'))) warnings.push(`${label}: only ${parsedCommands} of ${declaredCommands} load commands were decoded.`);
+  return {
+    regions: finishRegionMap(regions, file.size, 'Unmapped Mach-O bytes'),
+    structure: {
+      parser: 'Mach-O headers and load commands', mode: 'format-aware' as const,
+      complete: warnings.length === 0 && parsedCommands === declaredCommands,
+      limitation: 'Headers, common load commands, segments, sections, linked libraries, and code-signature metadata presence are decoded. Signature validity and unrecognized command payloads are not verified.',
+      warnings, findings,
+    },
+  };
+}
+
+async function parseMachO(file: File, signal?: AbortSignal): Promise<ParserOutput | null> {
+  const header = await readAt(file, 0, 8, signal);
+  const magic = machOMagic(header);
+  if (!magic) return null;
+  if (!magic.fat) return parseMachOThin(file, 0, file.size, 'main image', signal);
+  if (header.length < 8) return incompleteMachO(file, 0, file.size, 'Universal Mach-O header', 'The universal-binary header is truncated.');
+  const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+  const architectureCount = view.getUint32(4, magic.littleEndian);
+  const entrySize = magic.fat64 ? 32 : 20;
+  const count = Math.min(architectureCount, MACHO_FAT_ARCH_LIMIT);
+  const tableSize = count * entrySize;
+  const table = await readAt(file, 8, tableSize, signal);
+  const warnings: string[] = [];
+  const findings: ParserFinding[] = [parserFinding('Universal architectures', architectureCount)];
+  const regions: Region[] = [region('Universal Mach-O header', 0, 8, 'header')];
+  if (table.length) regions.push(region('Architecture table', 8, table.length, 'metadata'));
+  if (architectureCount > MACHO_FAT_ARCH_LIMIT) warnings.push(`Universal architecture listing was capped at ${MACHO_FAT_ARCH_LIMIT}.`);
+  if (table.length < tableSize) warnings.push('The universal architecture table is truncated.');
+  const tableView = new DataView(table.buffer, table.byteOffset, table.byteLength);
+  const tableEnd = 8 + architectureCount * entrySize;
+  for (let index = 0; index < count && (index + 1) * entrySize <= table.length; index++) {
+    const at = index * entrySize;
+    const cpu = tableView.getInt32(at, magic.littleEndian);
+    const subtype = tableView.getInt32(at + 4, magic.littleEndian);
+    const architecture = machoArchitecture(cpu);
+    const sliceOffsetValue = magic.fat64 ? safeNumber(tableView.getBigUint64(at + 8, magic.littleEndian)) : tableView.getUint32(at + 8, magic.littleEndian);
+    const sliceSize = magic.fat64 ? safeNumber(tableView.getBigUint64(at + 16, magic.littleEndian)) : tableView.getUint32(at + 12, magic.littleEndian);
+    const alignment = tableView.getUint32(at + (magic.fat64 ? 24 : 16), magic.littleEndian);
+    const valid = Number.isSafeInteger(sliceOffsetValue) && Number.isSafeInteger(sliceSize) && sliceOffsetValue >= tableEnd
+      && sliceOffsetValue <= file.size && sliceSize >= 4 && sliceSize <= file.size - Math.min(sliceOffsetValue, file.size);
+    findings.push(parserFinding(`Architecture slice · ${index + 1}`, `${architecture} · subtype ${subtype} · alignment 2^${alignment}`,
+      valid ? sliceOffsetValue : undefined, valid ? sliceSize : undefined, 'segment'));
+    if (!valid) {
+      warnings.push(`Universal architecture slice ${index + 1} has an invalid or out-of-file range.`);
+      continue;
+    }
+    regions.push(region(`Architecture slice · ${architecture}`, sliceOffsetValue, sliceSize, 'data'));
+    const slice = await parseMachOThin(file, sliceOffsetValue, sliceSize, architecture, signal);
+    if (!slice) { warnings.push(`Architecture slice ${index + 1} is not a supported thin Mach-O image.`); continue; }
+    warnings.push(...slice.structure.warnings.map((warning) => `${architecture}: ${warning}`));
+    findings.push(...(slice.structure.findings ?? []));
+  }
+  return {
+    regions: finishRegionMap(regions, file.size, 'Unmapped universal Mach-O bytes'),
+    structure: {
+      parser: 'Mach-O universal binaries and slices', mode: 'format-aware' as const,
+      complete: warnings.length === 0 && count === architectureCount,
+      limitation: 'Universal architecture tables and bounded 32-bit / 64-bit slices are inspected. Each slice uses the same bounded load-command decoder; code-signature validity is not verified.',
+      warnings, findings: findings.slice(0, 4_096),
+    },
+  };
+}
+
 function genericRegions(size: number) {
   if (!size) return [];
   const count = Math.min(128, Math.max(1, Math.ceil(size / (64 * 1024))));
@@ -1721,6 +1987,7 @@ const formatParserRegistry: FormatParser[] = [
   { id: 'ZIP', supports: (identity) => identity.type === 'ZIP archive', parse: parseZip },
   { id: 'PE', supports: (identity) => identity.type === 'MZ executable', parse: parsePe },
   { id: 'ELF', supports: (identity) => identity.type === 'ELF binary', parse: parseElf },
+  { id: 'Mach-O', supports: (identity) => identity.type === 'Mach-O binary', parse: parseMachO },
   { id: 'SQLite', supports: (identity) => identity.type === 'SQLite database', parse: parseSqlite },
   { id: 'PDF', supports: (identity) => identity.type === 'PDF document', parse: parsePdf },
 ];
@@ -1759,4 +2026,8 @@ async function parseStructure(file: File, identity: FileIdentity, signal?: Abort
       limitation: dispatch.parser ? 'The recognized signature could not be parsed safely; ranges are display windows, not discovered sections.'
         : 'No format-aware structural parser is available; ranges are display windows, not discovered sections.', warnings },
   };
+}
+
+export function inspectFileStructure(file: File, identity: FileIdentity, signal?: AbortSignal) {
+  return parseStructure(file, identity, signal);
 }

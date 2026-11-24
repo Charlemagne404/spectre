@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Ref } from 'react';
 import { Icon } from '../icons';
 import { HexPane } from './HexPane';
@@ -6,9 +6,17 @@ import { Pane } from './Pane';
 import { StringsPane } from './StringsPane';
 import { ByteHistogram, EntropyPlot, StructureMap } from './visualizations';
 import { byteSize } from './model';
-import type { Analysis, AnalysisRun, ByteRange, FileIdentity } from './model';
+import type { Analysis, AnalysisRun, ByteRange, FileIdentity, StructureReport } from './model';
 import type { Inspection } from './useInspection';
 import { downloadReport } from './reports';
+import type { ReportContext } from './reports';
+import { InvestigationPanel } from './InvestigationPanel';
+import type { BookmarkDraft } from './InvestigationPanel';
+import { ComparisonOverlay } from './ComparisonOverlay';
+import type { FileComparison } from './fileCompare';
+import { EmbeddedSignaturesPane } from './EmbeddedSignaturesPane';
+import { createBookmark, createInvestigation, deleteInvestigation, isMatchingFile, listInvestigations, recordAnalysis, recordComparison, updateInvestigation } from './investigations';
+import type { BookmarkKind, Investigation, InvestigationBookmark, InvestigationFile } from './investigations';
 
 interface WorkspaceProps {
   inspection: Inspection | null;
@@ -22,17 +30,40 @@ interface WorkspaceProps {
   reanalyze: () => void;
   back: () => void;
   cancel: () => void;
+  restoreFile: (file: InvestigationFile) => void;
   titleRef: Ref<HTMLHeadingElement>;
   searchRef: Ref<HTMLInputElement>;
 }
 
-type SelectionSource = 'structure' | 'entropy' | 'strings' | 'hex' | 'histogram';
+type SelectionSource = 'structure' | 'entropy' | 'strings' | 'hex' | 'histogram' | 'search';
 interface SharedSelection { range: ByteRange; source: SelectionSource }
 const EMPTY_PREVIEW: number[] = [];
 type DisplayAnalysis = Omit<Analysis, 'sha256' | 'structure'> & {
   sha256: string | null;
   structure: Analysis['structure'] | null;
 };
+
+function reportContextFor(investigation: Investigation | null, analysis: Analysis): ReportContext | undefined {
+  if (!investigation) return undefined;
+  const file = investigation.files.find((item) => isMatchingFile(item, analysis));
+  const comparisons = (investigation.comparisons ?? []).filter((item) => !file || item.firstFileId === file.id || item.secondFileId === file.id)
+    .map((item) => {
+      const first = investigation.files.find((candidate) => candidate.id === item.firstFileId);
+      const second = investigation.files.find((candidate) => candidate.id === item.secondFileId);
+      return {
+        comparedAt: item.comparedAt, mode: item.mode, firstFileName: first?.fileName ?? '(unavailable file record)',
+        firstSha256: first?.sha256 ?? null, secondFileName: second?.fileName ?? '(unavailable file record)',
+        secondSha256: second?.sha256 ?? null, identical: item.identical, comparedBytes: item.comparedBytes,
+        differingBytes: item.differingBytes, differenceRangeCount: item.differenceRangeCount,
+        omittedDifferenceRanges: item.omittedDifferenceRanges,
+      };
+    });
+  return {
+    id: investigation.id, name: investigation.name, createdAt: investigation.createdAt,
+    modifiedAt: investigation.modifiedAt, notes: investigation.notes, fileNotes: file?.notes ?? '',
+    bookmarks: file?.bookmarks ?? [], comparisons,
+  };
+}
 
 function displayForRun(run: AnalysisRun): DisplayAnalysis {
   const fallback: FileIdentity = {
@@ -60,7 +91,8 @@ function displayForRun(run: AnalysisRun): DisplayAnalysis {
   };
 }
 
-function FilePane({ data, sample, run, selection, select }: {
+function FilePane({ file, data, sample, run, selection, select }: {
+  file: File;
   data: DisplayAnalysis;
   sample: boolean;
   run: AnalysisRun | null;
@@ -140,6 +172,7 @@ function FilePane({ data, sample, run, selection, select }: {
       </div>
       {data.structure.findings.length > 128 && <p>{data.structure.findings.length - 128} additional findings are included in the report.</p>}
     </details>}
+    {data.sha256 && <EmbeddedSignaturesPane file={file} select={(range) => select(range, 'structure')} />}
   </Pane>;
 }
 
@@ -213,21 +246,32 @@ function emptyMetricMessage(kind: 'entropy' | 'strings' | 'frequency', fileSize:
   return processing?.statisticsStarted ? 'Resolving byte frequencies…' : 'Waiting for byte counts…';
 }
 
-function InspectionCanvas({ file, data, sample, run, processingRun, searchRef }: {
+function InspectionCanvas({ file, data, sample, run, processingRun, searchRef, onSelectionChange, navigateTo }: {
   file: File;
   data: DisplayAnalysis;
   sample: boolean;
   run: AnalysisRun | null;
   processingRun: AnalysisRun | null;
   searchRef: Ref<HTMLInputElement>;
+  onSelectionChange?: (selection: SharedSelection | null) => void;
+  navigateTo?: { range: ByteRange; source: SelectionSource; token: number } | null;
 }) {
   const [shared, setShared] = useState<SharedSelection | null>(() => file.size ? { range: { offset: 0, length: 1 }, source: 'hex' } : null);
   const selection = shared?.range ?? null;
   const offset = selection?.offset;
   const [byte, setByte] = useState<{ offset: number; value: number }>();
+  const lastNavigation = useRef(0);
   const firstByte = byte?.offset === offset ? byte?.value : undefined;
   const select = (range: ByteRange, source: SelectionSource) => setShared({ range, source });
   const hexVisible = !run || run.hexPreview.length > 0;
+
+  useEffect(() => { onSelectionChange?.(shared); }, [shared, onSelectionChange]);
+
+  useEffect(() => {
+    if (!navigateTo || navigateTo.token === lastNavigation.current) return;
+    lastNavigation.current = navigateTo.token;
+    setShared({ range: navigateTo.range, source: navigateTo.source });
+  }, [navigateTo]);
 
   useEffect(() => {
     if (!hexVisible || offset === undefined || offset >= file.size) return;
@@ -245,7 +289,7 @@ function InspectionCanvas({ file, data, sample, run, processingRun, searchRef }:
   };
 
   return <div className="workspace-grid">
-    <FilePane data={data} sample={sample} run={processingRun ?? run} selection={selection}
+    <FilePane file={file} data={data} sample={sample} run={processingRun ?? run} selection={selection}
       select={(range, source) => select(range, source)} />
     <Pane name="Entropy" className="entropy-pane" actions={<span className="chart-summary">
       <span>Whole file</span><strong>{run && !run.statisticsCompleted ? '—' : data.averageEntropy.toFixed(2)}</strong> bits/B
@@ -259,7 +303,7 @@ function InspectionCanvas({ file, data, sample, run, processingRun, searchRef }:
       emptyMessage={emptyMetricMessage('strings', data.size, run, processingRun, data.totalStrings)}
       searchReady={!run || run.strings.length > 0 || run.stringsCompleted} searchComplete={!run || run.stringsCompleted}
       select={(range) => select(range, 'strings')} searchRef={searchRef} />
-    <HexPane file={file} selection={selection} firstByte={firstByte} select={(range) => select(range, 'hex')}
+    <HexPane file={file} selection={selection} firstByte={firstByte} regions={data.regions} select={(range, source = 'hex') => select(range, source)}
       prefetched={run?.hexPreview ?? EMPTY_PREVIEW} enabled={hexVisible}
       emptyMessage={processingRun?.status === 'failed' ? 'Bytes unavailable · analysis failed.'
         : processingRun?.status === 'cancelled' ? 'Analysis cancelled · partial bytes retained.'
@@ -270,12 +314,161 @@ function InspectionCanvas({ file, data, sample, run, processingRun, searchRef }:
 }
 
 export function Workspace({ inspection, run, pending, error, activating, shuttingDown, open, openSample, reanalyze,
-  back, cancel, titleRef, searchRef, processingRun }: WorkspaceProps & { processingRun: AnalysisRun | null }) {
+  back, cancel, titleRef, searchRef, processingRun, restoreFile }: WorkspaceProps & { processingRun: AnalysisRun | null }) {
+  const [investigations, setInvestigations] = useState<Investigation[]>([]);
+  const [activeInvestigation, setActiveInvestigation] = useState<Investigation | null>(null);
+  const [investigationOpen, setInvestigationOpen] = useState(false);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
+  const [bookmarkSelection, setBookmarkSelection] = useState<SharedSelection | null>(null);
+  const [bookmarkDraft, setBookmarkDraft] = useState<BookmarkDraft | null>(null);
+  const [navigationRequest, setNavigationRequest] = useState<{ range: ByteRange; source: SelectionSource; token: number } | null>(null);
+  const [storageError, setStorageError] = useState('');
+  const [storageStatus, setStorageStatus] = useState('');
+  const navigationSequence = useRef(0);
+  const analysis = inspection?.data ?? null;
+
+  const replaceInvestigation = useCallback((updated: Investigation) => {
+    setInvestigations((current) => [updated, ...current.filter((item) => item.id !== updated.id)].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)));
+    setActiveInvestigation((current) => current?.id === updated.id ? updated : current);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    listInvestigations().then((items) => { if (active) setInvestigations(items); })
+      .catch((cause: unknown) => { if (active) setStorageError(cause instanceof Error ? cause.message : 'Local investigations could not be loaded.'); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!activeInvestigation || !analysis) return;
+    let current = true;
+    const investigationId = activeInvestigation.id;
+    setStorageStatus('Recording file identity and analysis summary locally…');
+    recordAnalysis(investigationId, analysis).then(({ investigation }) => {
+      if (!current) return;
+      replaceInvestigation(investigation);
+      setStorageError('');
+      setStorageStatus('Analysis metadata saved locally. The source file was not copied.');
+    }).catch((cause: unknown) => {
+      if (current) setStorageError(cause instanceof Error ? cause.message : 'Analysis metadata could not be saved.');
+    });
+    return () => { current = false; };
+  }, [activeInvestigation?.id, analysis?.sha256, inspection?.id, replaceInvestigation]);
+
+  const updateActive = useCallback(async (update: (record: Investigation) => Investigation) => {
+    if (!activeInvestigation) return;
+    try {
+      const updated = await updateInvestigation(activeInvestigation.id, update);
+      if (!updated) throw new Error('This investigation is no longer available in local storage.');
+      replaceInvestigation(updated);
+      setStorageError('');
+      setStorageStatus('Saved locally.');
+    } catch (cause) {
+      setStorageError(cause instanceof Error ? cause.message : 'Investigation changes could not be saved.');
+    }
+  }, [activeInvestigation, replaceInvestigation]);
+
+  async function createNewInvestigation(name: string) {
+    try {
+      const created = await createInvestigation(name);
+      replaceInvestigation(created);
+      setActiveInvestigation(created);
+      setStorageError('');
+      setStorageStatus('Investigation created locally.');
+    } catch (cause) {
+      setStorageError(cause instanceof Error ? cause.message : 'Investigation could not be created.');
+    }
+  }
+
+  function chooseInvestigation(id: string) {
+    if (!id) { setActiveInvestigation(null); setStorageStatus('One-off session · nothing is persisted until an investigation is opened.'); return; }
+    const selected = investigations.find((item) => item.id === id);
+    if (selected) { setActiveInvestigation(selected); setStorageError(''); setStorageStatus('Investigation opened.'); }
+  }
+
+  async function removeActiveInvestigation() {
+    if (!activeInvestigation) return;
+    const removedId = activeInvestigation.id;
+    try {
+      await deleteInvestigation(removedId);
+      setInvestigations((items) => items.filter((item) => item.id !== removedId));
+      setActiveInvestigation(null);
+      setBookmarkDraft(null);
+      setStorageStatus('Investigation deleted.');
+      setStorageError('');
+    } catch (cause) {
+      setStorageError(cause instanceof Error ? cause.message : 'Investigation could not be deleted.');
+    }
+  }
+
+  async function addBookmark(draft: BookmarkDraft, label: string, note: string) {
+    if (!activeInvestigation || !analysis || !label.trim()) return;
+    const file = activeInvestigation.files.find((item) => isMatchingFile(item, analysis));
+    if (!file) { setStorageError('The current file fingerprint is not part of this investigation.'); return; }
+    const bookmark = createBookmark(file, draft.range, draft.kind, label, note);
+    await updateActive((record) => ({ ...record, files: record.files.map((item) => item.id === file.id
+      ? { ...item, bookmarks: [...item.bookmarks, bookmark] } : item) }));
+    setBookmarkDraft(null);
+  }
+
+  async function editBookmark(fileId: string, bookmarkId: string, label: string, note: string) {
+    await updateActive((record) => ({ ...record, files: record.files.map((file) => file.id !== fileId ? file : {
+      ...file, bookmarks: file.bookmarks.map((bookmark) => bookmark.id === bookmarkId ? { ...bookmark, label: label.trim().slice(0, 120), note: note.slice(0, 4_000) } : bookmark),
+    }) }));
+  }
+
+  async function removeBookmark(fileId: string, bookmarkId: string) {
+    await updateActive((record) => ({ ...record, files: record.files.map((file) => file.id === fileId ? {
+      ...file, bookmarks: file.bookmarks.filter((bookmark) => bookmark.id !== bookmarkId),
+    } : file) }));
+  }
+
+  async function saveComparison(secondIdentity: FileIdentity, structure: StructureReport, secondRegionCount: number, result: FileComparison) {
+    if (!activeInvestigation || !analysis) return;
+    try {
+      const saved = await recordComparison(activeInvestigation.id, analysis, secondIdentity,
+        result.files[1].sha256, result.files[1].entropy, structure, secondRegionCount, result);
+      replaceInvestigation(saved);
+      setStorageError('');
+      setStorageStatus('Comparison summary and both file fingerprints saved in this investigation.');
+    } catch (cause) {
+      setStorageError(cause instanceof Error ? cause.message : 'Comparison metadata could not be saved.');
+    }
+  }
+
+  function navigateBookmark(file: InvestigationFile, bookmark: InvestigationBookmark) {
+    if (!analysis || !isMatchingFile(file, analysis) || bookmark.sha256 !== analysis.sha256 || bookmark.fileId !== file.id
+      || !Number.isSafeInteger(bookmark.offset) || !Number.isSafeInteger(bookmark.length) || bookmark.offset < 0
+      || bookmark.length < 1 || bookmark.offset > analysis.size || bookmark.length > analysis.size - bookmark.offset) {
+      setStorageStatus('Choose and analyze the source whose SHA-256 matches this bookmark before navigating.');
+      return;
+    }
+    const source: SelectionSource = bookmark.kind === 'structure' ? 'structure'
+      : bookmark.kind === 'string' ? 'strings'
+        : bookmark.kind === 'search' ? 'search' : 'hex';
+    setNavigationRequest({ range: { offset: bookmark.offset, length: bookmark.length }, source, token: ++navigationSequence.current });
+    setInvestigationOpen(false);
+  }
+
+  const reportSelection = useCallback((selection: SharedSelection | null) => setBookmarkSelection(selection), []);
+  const requestBookmark = () => {
+    const selected = bookmarkSelection;
+    if (!selected || !analysis) { setStorageStatus('Select a byte range in a completed file first.'); setInvestigationOpen(true); return; }
+    const region = analysis.regions.find((item) => selected.range.offset >= item.offset && selected.range.offset - item.offset < item.length);
+    const kind: BookmarkKind = selected.source === 'structure' ? 'structure'
+      : selected.source === 'strings' ? 'string'
+        : selected.source === 'search' ? 'search'
+          : selected.range.length === 1 ? 'byte' : 'range';
+    setBookmarkDraft({ range: selected.range, kind, structureLabel: region?.label });
+    setInvestigationOpen(true);
+  };
+
   const liveRun = run && run.status !== 'complete' ? run : null;
   const display = liveRun ? displayForRun(liveRun) : inspection?.data;
   const activeFile = processingRun?.file ?? run?.file ?? inspection?.file;
   const sample = run?.sample ?? inspection?.sample ?? false;
   const key = run?.jobId ?? inspection?.id;
+  const canBookmark = !!activeInvestigation && !!analysis && !!bookmarkSelection;
   return <main className={'workspace' + (activating ? ' igniting' : '') + (shuttingDown ? ' powering-down' : '')}>
     <header className="workspace-header">
       <div className="workspace-identity">
@@ -284,18 +477,42 @@ export function Workspace({ inspection, run, pending, error, activating, shuttin
         <h1 tabIndex={-1} ref={titleRef}><span className="module-mark" aria-hidden="true" />BLACKBOX</h1>
       </div>
       <div className="workspace-controls">
+        {inspection && <button type="button" className="quiet-button" onClick={() => { setInvestigationOpen(false); setComparisonOpen(true); }} title="Compare this file with another">Compare</button>}
+        <button type="button" className="quiet-button investigation-toggle" aria-expanded={investigationOpen}
+          onClick={() => setInvestigationOpen((value) => !value)} title="Open local investigations">
+          <span className="investigation-indicator" aria-hidden="true" />{activeInvestigation ? activeInvestigation.name || 'Untitled investigation' : 'Investigation'}
+        </button>
+        {activeInvestigation && <button type="button" className="quiet-button" onClick={requestBookmark} disabled={!canBookmark} title="Bookmark the current byte selection">Bookmark</button>}
         <button type="button" className="quiet-button" onClick={openSample} title="Load the bundled RIFF/WAVE sample">Sample</button>
         {activeFile && <button type="button" className="quiet-button" onClick={reanalyze} disabled={pending}>Reanalyze</button>}
         {inspection && processingRun?.status === 'complete' && <div className="report-controls" aria-label="Export analysis report">
-          <button type="button" className="quiet-button" onClick={() => downloadReport(inspection.data, 'json')}>JSON</button>
-          <button type="button" className="quiet-button" onClick={() => downloadReport(inspection.data, 'html')}>HTML</button>
+          <button type="button" className="quiet-button" onClick={() => downloadReport(inspection.data, 'json', reportContextFor(activeInvestigation, inspection.data))}>JSON</button>
+          <button type="button" className="quiet-button" onClick={() => downloadReport(inspection.data, 'html', reportContextFor(activeInvestigation, inspection.data))}>HTML</button>
         </div>}
         <button type="button" className="open-button" onClick={open}><Icon name="open" /> Open file</button>
       </div>
     </header>
+    {investigationOpen && <InvestigationPanel investigations={investigations} active={activeInvestigation} analysis={analysis}
+      draft={bookmarkDraft} error={storageError} status={storageStatus} onClose={() => setInvestigationOpen(false)}
+      onCreate={(name) => void createNewInvestigation(name)} onSelect={chooseInvestigation}
+      onRename={(name) => void updateActive((record) => ({ ...record, name: name.trim().slice(0, 100) }))}
+      onDelete={() => void removeActiveInvestigation()}
+      onNotes={(notes) => void updateActive((record) => ({ ...record, notes: notes.slice(0, 20_000) }))}
+      onFileNotes={(fileId, notes) => void updateActive((record) => ({ ...record, files: record.files.map((file) => file.id === fileId ? { ...file, notes: notes.slice(0, 8_000) } : file) }))}
+      onAddBookmark={(draft, label, note) => void addBookmark(draft, label, note)}
+      onNavigate={navigateBookmark} onRestore={(file) => restoreFile(file)}
+      onEditBookmark={(fileId, bookmarkId, label, note) => void editBookmark(fileId, bookmarkId, label, note)}
+      onDeleteBookmark={(fileId, bookmarkId) => void removeBookmark(fileId, bookmarkId)} />}
     {run && <AnalysisStatus run={run} processing={processingRun ?? run} cancel={cancel} />}
     {!run && error && <div className="workspace-error" role="alert">{error}</div>}
     {display && activeFile ? <InspectionCanvas key={key} file={activeFile} data={display} sample={sample} run={liveRun}
-      processingRun={processingRun} searchRef={searchRef} /> : !pending && <EmptyWorkspaceCanvas />}
+      processingRun={processingRun} searchRef={searchRef} onSelectionChange={reportSelection} navigateTo={navigationRequest} /> : !pending && <EmptyWorkspaceCanvas />}
+    {comparisonOpen && inspection && <ComparisonOverlay firstFile={inspection.file} firstAnalysis={inspection.data}
+      canAnnotate={!!activeInvestigation} onClose={() => setComparisonOpen(false)}
+      onBookmark={(range) => {
+        setBookmarkDraft({ range, kind: 'difference' });
+        setComparisonOpen(false);
+        setInvestigationOpen(true);
+      }} onComplete={saveComparison} />}
   </main>;
 }

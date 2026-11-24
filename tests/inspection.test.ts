@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { findBytePattern, parseBytePattern } from '../src/blackbox/byteSearch';
+import { findBytePattern, findPattern, parseBytePattern, parseSearchPattern } from '../src/blackbox/byteSearch';
 import { applyAnalysisEvent, createAnalysisRun } from '../src/blackbox/analysisEvents';
 import { expandForPresentation, minimumPresentationDuration, presentationPhase, SMALL_FILE_PRESENTATION_LIMIT } from '../src/blackbox/analysisPresentation';
 import { intersects } from '../src/blackbox/model';
-import { interpretUnsigned } from '../src/blackbox/numeric';
+import { interpretData, interpretUnsigned } from '../src/blackbox/numeric';
+import { compareFiles } from '../src/blackbox/fileCompare';
+import { scanEmbeddedSignatures } from '../src/blackbox/embeddedSignatures';
 import type { AnalysisEvent } from '../src/blackbox/model';
 
 function fileFromBytes(bytes: Uint8Array, name: string) {
@@ -16,6 +18,21 @@ describe('hexadecimal search', () => {
     expect(parseBytePattern('F')).toBeNull();
     expect(parseBytePattern('not hex')).toBeNull();
     expect(parseBytePattern('AA'.repeat(65))).toBeNull();
+  });
+
+  it('supports full-byte and nibble wildcards without weakening exact parsing', async () => {
+    expect(parseBytePattern('DE ?? BE EF')).toBeNull();
+    const wildcard = parseSearchPattern('DE A? ?E EF', 'hex');
+    expect(wildcard).not.toBeNull();
+    expect(await findPattern(fileFromBytes(Uint8Array.from([0xde, 0xaf, 0x3e, 0xef]), 'wild.bin'), wildcard!, 0)).toBe(0);
+    expect(await findPattern(fileFromBytes(Uint8Array.from([0xde, 0xb0, 0x3f, 0xef]), 'miss.bin'), wildcard!, 0)).toBe(-1);
+  });
+
+  it('encodes ASCII, UTF-8 and UTF-16LE text patterns', () => {
+    expect([...parseSearchPattern('ABC', 'ascii')!.bytes]).toEqual([0x41, 0x42, 0x43]);
+    expect([...parseSearchPattern('é', 'utf8')!.bytes]).toEqual([0xc3, 0xa9]);
+    expect([...parseSearchPattern('Aλ', 'utf16le')!.bytes]).toEqual([0x41, 0, 0xbb, 0x03]);
+    expect(parseSearchPattern('é', 'ascii')).toBeNull();
   });
 
   it('searches bounded slices across read boundaries and wraps after the current offset', async () => {
@@ -36,6 +53,25 @@ describe('hexadecimal search', () => {
     controller.abort();
     await expect(findBytePattern(file, new Uint8Array([0xff]), 0, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
   });
+
+  it('searches backward and wraps over the file using bounded chunks', async () => {
+    const bytes = new Uint8Array(1024 * 1024 + 20);
+    bytes.set([0xca, 0xfe], 8);
+    bytes.set([0xca, 0xfe], 1024 * 1024 + 10);
+    const pattern = parseSearchPattern('CA FE', 'hex')!;
+    const file = fileFromBytes(bytes, 'reverse.bin');
+    expect(await findPattern(file, pattern, 1024 * 1024 + 12, 'backward')).toBe(1024 * 1024 + 10);
+    expect(await findPattern(file, pattern, 7, 'backward')).toBe(1024 * 1024 + 10);
+  });
+
+  it('reports the actual number of candidate offsets scanned when no match exists', async () => {
+    const file = fileFromBytes(new Uint8Array(1024 * 1024 + 32), 'progress.bin');
+    const progress: Array<{ processed: number; total: number }> = [];
+    const result = await findPattern(file, parseSearchPattern('FF FF', 'hex')!, 0, 'forward', undefined, (value) => progress.push(value));
+    expect(result).toBe(-1);
+    expect(progress.at(-1)).toEqual({ processed: file.size - 1, total: file.size - 1 });
+    expect(progress.length).toBeGreaterThan(1);
+  });
 });
 
 describe('hexadecimal integer interpretation', () => {
@@ -51,6 +87,99 @@ describe('hexadecimal integer interpretation', () => {
 
   it('does not interpret a partial value past the available file bytes', () => {
     expect(interpretUnsigned(Uint8Array.from([0x34, 0x12]), 4, 'little')).toBeNull();
+  });
+
+  it('decodes signed integers, IEEE floats, textual values and raw representations', () => {
+    expect(interpretData(Uint8Array.from([0xff]), 'I8', 'little')?.value).toBe('-1');
+    expect(interpretData(Uint8Array.from([0xff, 0xff]), 'I16', 'big')?.value).toBe('-1');
+    expect(interpretData(Uint8Array.from([0, 0, 0xc0, 0x3f]), 'F32', 'little')?.value).toBe('1.5');
+    expect(interpretData(Uint8Array.from([0x41, 0, 0xbb, 3]), 'UTF16LE', 'little')?.value).toBe('Aλ');
+    expect(interpretData(Uint8Array.from([0xc3, 0x28]), 'UTF8', 'little')?.value).toContain('INVALID');
+    expect(interpretData(Uint8Array.from([0, 255]), 'BINARY', 'little')?.value).toBe('00000000 11111111');
+    expect(interpretData(Uint8Array.from([0x41, 0]), 'HEX', 'little')?.value).toBe('41 00');
+    expect(interpretData(Uint8Array.from([0x41]), 'U16', 'little')).toBeNull();
+  });
+
+  it('keeps 64-bit precision and renders Unix timestamps as UTC', () => {
+    const bytes = Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(interpretData(bytes, 'U64', 'little')?.value).toBe('578437695752307201');
+    expect(interpretData(Uint8Array.from([0, 0, 0, 0]), 'UNIX32', 'big')?.value).toBe('1970-01-01T00:00:00.000Z');
+  });
+});
+
+describe('offset-aligned binary comparison', () => {
+  it('verifies identical bytes and independently fingerprints both files', async () => {
+    const bytes = Uint8Array.from([49, 50, 51, 52, 53, 54, 55, 56, 57]);
+    const result = await compareFiles(fileFromBytes(bytes, 'one.bin'), fileFromBytes(bytes, 'two.bin'));
+    expect(result.mode).toBe('offset-aligned');
+    expect(result.identical).toBe(true);
+    expect(result.differingBytes).toBe(0);
+    expect(result.files[0].sha256).toBe('15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225');
+    expect(result.files[0].sha256).toBe(result.files[1].sha256);
+  });
+
+  it('groups changes across chunk edges and accounts for appended bytes', async () => {
+    const first = new Uint8Array(1024 * 1024 + 8);
+    const second = first.slice();
+    second[1024 * 1024 - 1] = 1;
+    second[1024 * 1024] = 2;
+    second[second.length - 2] = 3;
+    const result = await compareFiles(fileFromBytes(first, 'base.bin'), fileFromBytes(second, 'changed.bin'));
+    expect(result.identical).toBe(false);
+    expect(result.differingBytes).toBe(3);
+    expect(result.differences).toEqual([
+      { offset: 1024 * 1024 - 1, length: 2 },
+      { offset: second.length - 2, length: 1 },
+    ]);
+
+    const appended = await compareFiles(fileFromBytes(first, 'short.bin'), fileFromBytes(new Uint8Array([...first, 9, 8]), 'long.bin'));
+    expect(appended.differingBytes).toBe(2);
+    expect(appended.differences.at(-1)).toEqual({ offset: first.length, length: 2 });
+  });
+
+  it('defines insertion alignment honestly and cancels before reading file slices', async () => {
+    const base = fileFromBytes(Uint8Array.from([1, 2, 3, 4]), 'base.bin');
+    const inserted = fileFromBytes(Uint8Array.from([1, 9, 2, 3, 4]), 'inserted.bin');
+    const result = await compareFiles(base, inserted);
+    expect(result.mode).toBe('offset-aligned');
+    expect(result.differingBytes).toBe(4);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(compareFiles(base, inserted, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('embedded signature discovery', () => {
+  it('finds and validates a complete PNG signature across a scan-slice boundary', async () => {
+    const prefix = new Uint8Array(1024 * 1024 - 4).fill(0x41);
+    const png = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, ...new Array(13).fill(0), 0, 0, 0, 0,
+      0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0, 0, 0, 0,
+    ]);
+    const bytes = new Uint8Array(prefix.length + png.length);
+    bytes.set(prefix);
+    bytes.set(png, prefix.length);
+    const file = fileFromBytes(bytes, 'wrapped.bin');
+    const progress: number[] = [];
+    const result = await scanEmbeddedSignatures(file, (value) => progress.push(value.processed));
+    expect(result.totalCandidates).toBe(1);
+    expect(result.findings[0]).toMatchObject({ offset: prefix.length, format: 'PNG', classification: 'complete', length: png.length });
+    expect(result.findings[0].note).toContain('CRC values were not checked');
+    expect(progress[0]).toBe(1024 * 1024);
+  });
+
+  it('keeps malformed signatures as candidates and cancels bounded scans', async () => {
+    const malformed = fileFromBytes(Uint8Array.from([0x78, 0x50, 0x4b, 0x03, 0x04, 0, 0]), 'false-positive.bin');
+    const result = await scanEmbeddedSignatures(malformed);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].classification).toBe('candidate');
+    expect(result.findings[0].note).toContain('truncated');
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(scanEmbeddedSignatures(fileFromBytes(new Uint8Array(1024 * 1024), 'large.bin'), undefined, controller.signal))
+      .rejects.toMatchObject({ name: 'AbortError' });
   });
 });
 

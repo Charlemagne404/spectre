@@ -119,6 +119,123 @@ function zip64Fixture() {
   return result;
 }
 
+function machOThinFixture(is64: boolean, littleEndian: boolean) {
+  const headerSize = is64 ? 32 : 28;
+  const segmentSize = is64 ? 72 + 80 : 56 + 68;
+  const dylibName = new TextEncoder().encode('/usr/lib/libSystem.B.dylib\0');
+  const dylibSize = Math.ceil((24 + dylibName.length) / 4) * 4;
+  const commandSizes = [segmentSize, dylibSize, 16, 24, 24];
+  const commandBytes = commandSizes.reduce((sum, size) => sum + size, 0);
+  const signatureOffset = headerSize + commandBytes;
+  const file = new Uint8Array(signatureOffset + 4);
+  file.set(is64
+    ? littleEndian ? [0xcf, 0xfa, 0xed, 0xfe] : [0xfe, 0xed, 0xfa, 0xcf]
+    : littleEndian ? [0xce, 0xfa, 0xed, 0xfe] : [0xfe, 0xed, 0xfa, 0xce]);
+  const view = new DataView(file.buffer);
+  view.setInt32(4, is64 ? 0x01000007 : 7, littleEndian);
+  view.setInt32(8, 3, littleEndian);
+  view.setUint32(12, 2, littleEndian);
+  view.setUint32(16, commandSizes.length, littleEndian);
+  view.setUint32(20, commandBytes, littleEndian);
+  view.setUint32(24, 0x200085, littleEndian);
+  if (is64) view.setUint32(28, 0, littleEndian);
+
+  let cursor = headerSize;
+  const segment = new DataView(file.buffer, cursor, segmentSize);
+  segment.setUint32(0, is64 ? 0x19 : 1, littleEndian);
+  segment.setUint32(4, segmentSize, littleEndian);
+  file.set(new TextEncoder().encode('__TEXT'), cursor + 8);
+  if (is64) {
+    segment.setBigUint64(24, 0x1_0000_0000n, littleEndian);
+    segment.setBigUint64(32, BigInt(file.length), littleEndian);
+    segment.setBigUint64(40, 0n, littleEndian);
+    segment.setBigUint64(48, BigInt(file.length), littleEndian);
+    segment.setUint32(56, 7, littleEndian);
+    segment.setUint32(60, 5, littleEndian);
+    segment.setUint32(64, 1, littleEndian);
+    const section = cursor + 72;
+    file.set(new TextEncoder().encode('__text'), section);
+    file.set(new TextEncoder().encode('__TEXT'), section + 16);
+    segment.setBigUint64(72 + 32, 0x1_0000_1000n, littleEndian);
+    segment.setBigUint64(72 + 40, 4n, littleEndian);
+    segment.setUint32(72 + 48, signatureOffset, littleEndian);
+    segment.setUint32(72 + 52, 2, littleEndian);
+  } else {
+    segment.setUint32(24, 0x1000, littleEndian);
+    segment.setUint32(28, file.length, littleEndian);
+    segment.setUint32(32, 0, littleEndian);
+    segment.setUint32(36, file.length, littleEndian);
+    segment.setUint32(40, 7, littleEndian);
+    segment.setUint32(44, 5, littleEndian);
+    segment.setUint32(48, 1, littleEndian);
+    const section = cursor + 56;
+    file.set(new TextEncoder().encode('__text'), section);
+    file.set(new TextEncoder().encode('__TEXT'), section + 16);
+    segment.setUint32(56 + 32, 0x1010, littleEndian);
+    segment.setUint32(56 + 36, 4, littleEndian);
+    segment.setUint32(56 + 40, signatureOffset, littleEndian);
+    segment.setUint32(56 + 44, 2, littleEndian);
+  }
+  cursor += segmentSize;
+
+  const dylib = new DataView(file.buffer, cursor, dylibSize);
+  dylib.setUint32(0, 0x0c, littleEndian);
+  dylib.setUint32(4, dylibSize, littleEndian);
+  dylib.setUint32(8, 24, littleEndian);
+  dylib.setUint32(12, 2, littleEndian);
+  dylib.setUint32(16, 0x0001_0000, littleEndian);
+  dylib.setUint32(20, 0x0001_0000, littleEndian);
+  file.set(dylibName, cursor + 24);
+  cursor += dylibSize;
+
+  const signature = new DataView(file.buffer, cursor, 16);
+  signature.setUint32(0, 0x1d, littleEndian);
+  signature.setUint32(4, 16, littleEndian);
+  signature.setUint32(8, signatureOffset, littleEndian);
+  signature.setUint32(12, 4, littleEndian);
+  cursor += 16;
+
+  const main = new DataView(file.buffer, cursor, 24);
+  main.setUint32(0, 0x80000028, littleEndian);
+  main.setUint32(4, 24, littleEndian);
+  main.setBigUint64(8, 0x1234n, littleEndian);
+  main.setBigUint64(16, 0x1000n, littleEndian);
+  cursor += 24;
+
+  const uuid = new DataView(file.buffer, cursor, 24);
+  uuid.setUint32(0, 0x1b, littleEndian);
+  uuid.setUint32(4, 24, littleEndian);
+  file.set(Uint8Array.from({ length: 16 }, (_, index) => index), cursor + 8);
+  file.set([0x53, 0x49, 0x47, 0x21], signatureOffset);
+  return file;
+}
+
+function machOFatFixture(fat64: boolean, littleEndian: boolean) {
+  const slice = machOThinFixture(true, false);
+  const recordSize = fat64 ? 32 : 20;
+  const offset = 8 + recordSize;
+  const result = new Uint8Array(offset + slice.length);
+  result.set(fat64
+    ? littleEndian ? [0xbf, 0xba, 0xfe, 0xca] : [0xca, 0xfe, 0xba, 0xbf]
+    : littleEndian ? [0xbe, 0xba, 0xfe, 0xca] : [0xca, 0xfe, 0xba, 0xbe]);
+  const view = new DataView(result.buffer);
+  view.setUint32(4, 1, littleEndian);
+  view.setInt32(8, 0x01000007, littleEndian);
+  view.setInt32(12, 3, littleEndian);
+  if (fat64) {
+    view.setBigUint64(16, BigInt(offset), littleEndian);
+    view.setBigUint64(24, BigInt(slice.length), littleEndian);
+    view.setUint32(32, 2, littleEndian);
+    view.setUint32(36, 0, littleEndian);
+  } else {
+    view.setUint32(16, offset, littleEndian);
+    view.setUint32(20, slice.length, littleEndian);
+    view.setUint32(24, 2, littleEndian);
+  }
+  result.set(slice, offset);
+  return result;
+}
+
 describe('event-driven file analysis', () => {
   it('reports actual WAVE regions, SHA-256, byte counts and progressive events', async () => {
     const file = demonstrationFile();
@@ -227,6 +344,50 @@ describe('event-driven file analysis', () => {
     expect(html).toContain('&lt;script&gt;window.spectrePwned=1&lt;/script&gt;');
     expect(html).not.toContain('<script>window.spectrePwned=1</script>');
     expect(html).not.toContain('<script>alert(1)</script>');
+  });
+
+  it('bounds and escapes investigation notes, bookmarks, and comparison metadata in exports', async () => {
+    const analysis = await analyzeFile(testFile(new TextEncoder().encode('report bytes'), 'finding.bin'));
+    const context = {
+      id: 'local-id', name: '<img src=x onerror=alert(1)>', createdAt: '2026-11-24T10:00:00.000Z',
+      modifiedAt: '2026-11-24T11:00:00.000Z', notes: '<script>case-note</script>', fileNotes: '<b>file-note</b>',
+      bookmarks: [{ label: '<svg onload=alert(2)>', note: '<script>bookmark-note</script>', kind: 'range',
+        offset: 3, length: 5, createdAt: '2026-11-24T10:00:00.000Z' }],
+      comparisons: [{ comparedAt: '2026-11-24T11:00:00.000Z', mode: 'offset-aligned' as const,
+        firstFileName: '<i>a.bin</i>', firstSha256: analysis.sha256, secondFileName: 'b.bin', secondSha256: null,
+        identical: false, comparedBytes: 12, differingBytes: 2, differenceRangeCount: 2, omittedDifferenceRanges: 0 }],
+    };
+    const report = buildReport(analysis, '2026-11-24T12:00:00.000Z', context);
+    expect(report.reportVersion).toBe(2);
+    expect(report.investigation?.bookmarks).toHaveLength(1);
+    const html = buildHtmlReport(analysis, '2026-11-24T12:00:00.000Z', context);
+    expect(html).toContain('&lt;script&gt;case-note&lt;/script&gt;');
+    expect(html).toContain('&lt;script&gt;bookmark-note&lt;/script&gt;');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(html).not.toContain('<script>case-note</script>');
+    expect(html).not.toContain('<script>bookmark-note</script>');
+  });
+
+  it('caps large parser and statistical tables in exported reports with omission counts', async () => {
+    const analysis = await analyzeFile(testFile(new TextEncoder().encode('bounded report'), 'bounded.bin'));
+    const expanded = {
+      ...analysis,
+      regions: Array.from({ length: 2_003 }, (_, index) => ({ offset: index, length: 1, label: `Region ${index}`, kind: 'metadata' as const })),
+      entropy: Array.from({ length: 600 }, (_, index) => ({ offset: index, length: 1, value: index % 8 })),
+      structure: { ...analysis.structure, findings: Array.from({ length: 1_005 }, (_, index) => ({
+        label: `Finding ${index}`, value: 'v'.repeat(5_000),
+      })) },
+    };
+    const report = buildReport(expanded);
+    expect(report.detectedFacts.regions).toHaveLength(2_000);
+    expect(report.detectedFacts.entropy.windows).toHaveLength(512);
+    expect(report.detectedFacts.structure.findings).toHaveLength(1_000);
+    expect(report.detectedFacts.structure.findings?.[0].value).toHaveLength(4_096);
+    expect(report.detectedFacts.reportOmissions).toEqual({ parserFindings: 5, parserWarnings: 0, regions: 3, entropyWindows: 88 });
+    const html = buildHtmlReport(expanded);
+    expect(html).toContain('3 additional regions omitted from this bounded report');
+    expect(html).toContain('5 additional findings omitted from this bounded report');
+    expect(html).toContain('88 additional windows omitted from this bounded report');
   });
 
   it('follows PDF xref entries to its catalog and page tree', async () => {
@@ -373,6 +534,54 @@ describe('event-driven file analysis', () => {
     expect(sqliteResult.regions.map(({ label, offset, length }) => [label, offset, length])).toEqual([
       ['SQLite page 1', 0, 512], ['SQLite page 2', 512, 512],
     ]);
+  });
+
+  it('inspects Mach-O 32-bit and 64-bit headers in both byte orders and universal slices', async () => {
+    for (const [is64, littleEndian, expectedArchitecture] of [
+      [false, true, 'x86'], [false, false, 'x86'], [true, true, 'x86-64'], [true, false, 'x86-64'],
+    ] as const) {
+      const result = await analyzeFile(testFile(machOThinFixture(is64, littleEndian), `thin-${is64}-${littleEndian}.macho`));
+      expect(result.type).toBe('Mach-O binary');
+      expect(result.mime).toBe('application/x-mach-binary');
+      expect(result.structure.parser).toBe('Mach-O headers and load commands');
+      expect(result.structure.complete).toBe(true);
+      expect(result.structure.findings).toContainEqual(expect.objectContaining({ label: 'Architecture · main image', value: expectedArchitecture }));
+      expect(result.structure.findings).toContainEqual(expect.objectContaining({ label: 'Linked library · main image', value: '/usr/lib/libSystem.B.dylib' }));
+      expect(result.structure.findings?.find(({ label }) => label.startsWith('Section · main image'))?.value).toContain('4 bytes');
+      expect(result.structure.findings?.find(({ label }) => label.startsWith('Code-signing metadata'))?.value).toContain('not cryptographically verified');
+      expect(result.structure.findings?.find(({ label }) => label.startsWith('Entry point'))?.value).toContain('0x1234');
+    }
+
+    for (const fat64 of [false, true]) for (const littleEndian of [false, true]) {
+      const result = await analyzeFile(testFile(machOFatFixture(fat64, littleEndian), `universal-${fat64}-${littleEndian}.macho`));
+      expect(result.type).toBe('Mach-O binary');
+      expect(result.structure.parser).toBe('Mach-O universal binaries and slices');
+      expect(result.structure.complete).toBe(true);
+      expect(result.structure.findings).toContainEqual(expect.objectContaining({ label: 'Architecture slice · 1', value: expect.stringContaining('x86-64') }));
+      expect(result.structure.findings).toContainEqual(expect.objectContaining({ label: 'Linked library · x86-64', value: '/usr/lib/libSystem.B.dylib' }));
+    }
+  });
+
+  it('reports truncated Mach-O headers, invalid commands and unsafe universal slices', async () => {
+    const truncated = await analyzeFile(testFile(Uint8Array.from([0xcf, 0xfa, 0xed, 0xfe]), 'truncated.macho'));
+    expect(truncated.structure.complete).toBe(false);
+    expect(truncated.structure.warnings).toContain('The Mach-O header is truncated.');
+
+    const invalid = machOThinFixture(true, true);
+    new DataView(invalid.buffer).setUint32(32 + 4, 0, true);
+    const invalidResult = await analyzeFile(testFile(invalid, 'bad-command.macho'));
+    expect(invalidResult.structure.complete).toBe(false);
+    expect(invalidResult.structure.warnings).toContain('main image: load-command 0 has an invalid size.');
+
+    const badFat = new Uint8Array(28);
+    badFat.set([0xca, 0xfe, 0xba, 0xbe]);
+    new DataView(badFat.buffer).setUint32(4, 1, false);
+    new DataView(badFat.buffer).setInt32(8, 0x01000007, false);
+    new DataView(badFat.buffer).setUint32(16, 4096, false);
+    new DataView(badFat.buffer).setUint32(20, 512, false);
+    const badFatResult = await analyzeFile(testFile(badFat, 'bad-fat.macho'));
+    expect(badFatResult.structure.complete).toBe(false);
+    expect(badFatResult.structure.warnings).toContain('Universal architecture slice 1 has an invalid or out-of-file range.');
   });
 
   it('bounds SQLite child-page traversal and deduplicates repeated references', async () => {
